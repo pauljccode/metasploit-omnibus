@@ -1,0 +1,65 @@
+name: Intel dependency diagnosis
+on:
+  push:
+    branches: [ci/intel-dependency-diagnosis]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  xz:
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Reproduce the unchanged XZ recipe and compare NLS
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 0
+          sw_vers
+          xcrun clang --version
+          archive="$PWD/local/cache/xz-5.2.3.tar.gz"
+          echo "71928b357d0a09a12a4b4c5fafca8c31c19b0e7d3b8ebb19622e96f26dbf28cb  $archive" | shasum -a 256 -c -
+          mkdir evidence
+          task_root=$(mktemp -d "$RUNNER_TEMP/xz-diagnosis.XXXXXX")
+          for mode in original without-nls; do
+            mkdir "$task_root/$mode"
+            tar -xzf "$archive" -C "$task_root/$mode"
+            prefix="$task_root/$mode/install"
+            mkdir -p "$prefix/include" "$prefix/lib/pkgconfig"
+            export CFLAGS="-I$prefix/include -O3 -D_FORTIFY_SOURCE=2 -fstack-protector"
+            export CPPFLAGS="$CFLAGS" CXXFLAGS="$CFLAGS"
+            export LDFLAGS="-Wl,-rpath,$prefix/lib -L$prefix/lib"
+            export LD_RUN_PATH="$prefix/lib" PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
+            options=(--prefix="$prefix" --disable-debug --disable-dependency-tracking --disable-doc --disable-scripts)
+            if test "$mode" = without-nls; then options+=(--disable-nls); fi
+            (
+              cd "$task_root/$mode/xz-5.2.3"
+              ./configure "${options[@]}"
+              make install
+              make check
+            ) > "evidence/$mode-build.log" 2>&1
+            cp "$task_root/$mode/xz-5.2.3/config.log" "evidence/$mode-config.log"
+            /usr/bin/otool -L "$prefix/bin/xz" "$prefix/lib/liblzma.5.dylib" | tee "evidence/$mode-links.txt"
+            printf %s native-package-validation > "$task_root/input"
+            "$prefix/bin/xz" -c "$task_root/input" | "$prefix/bin/xz" -dc > "$task_root/output"
+            cmp "$task_root/input" "$task_root/output"
+          done
+          grep -q '/usr/local/.*libintl' evidence/original-links.txt
+          if grep -q '/usr/local/' evidence/without-nls-links.txt; then
+            echo 'Unexpected external dependency remains'
+            exit 1
+          fi
+          echo INTEL_XZ_BASELINE_AND_NLS_COMPARISON_PASSED
+      - name: Preserve diagnosis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intel-xz-diagnosis
+          path: evidence/
+          retention-days: 7
