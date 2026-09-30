@@ -44,6 +44,12 @@ build do
     patch source: "libffi-3.3-arm64.patch", plevel: 1, env: env
   end
 
+  if version == "3.4.2" && mac_os_x? && arm?
+    # Backport libffi#857: newer Apple Clang rejects function labels inside
+    # an active CFI procedure. Keep the dependency pin unchanged.
+    patch source: "libffi-3.4.2-arm64-cfi.patch", plevel: 1, env: env
+  end
+
   # AIX's old version of patch doesn't like the patch here
   unless aix?
     # disable multi-os-directory via configure flag (don't use /lib64)
