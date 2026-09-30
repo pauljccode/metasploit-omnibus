@@ -42,7 +42,8 @@ build do
     "--disable-doc",
     "--disable-scripts",
   ]
-  config_command << "--disable-nls" if windows?
+  # Do not let the bundled XZ tools depend on the builder's Homebrew gettext.
+  config_command << "--disable-nls" if windows? || mac_os_x?
 
   configure(*config_command, env: env)
 
