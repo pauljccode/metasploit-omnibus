@@ -33,7 +33,7 @@ end
 
 ruby_abi_version = "3.4.0"
 # This depends on extra system libraries on OS X
-whitelist_file "#{install_dir}//embedded/framework/data/isight.bundle"
+whitelist_file "#{install_dir}/+embedded/framework/data/isight.bundle"
 
 # Files in this path are currently attached to exploits and do not need to pass system-specific omnibus health checks
 whitelist_file "#{install_dir}/embedded/framework/data/exploits/.*"
@@ -43,7 +43,7 @@ whitelist_file "#{install_dir}//embedded/framework/data/exploits/.*"
 whitelist_file "#{install_dir}/embedded/lib/ruby/gems/#{ruby_abi_version}/gems/metasploit-payloads.*"
 
 # Also whitelist mettle
-whitelist_file "#{install_dir}//embedded/lib/ruby/gems/#{ruby_abi_version}/gems/metasploit_payloads.*"
+whitelist_file "#{install_dir}/+embedded/lib/ruby/gems/#{ruby_abi_version}/gems/metasploit_payloads.*"
 
 # Also whitelist sqlite deps too as libz is provided just not first on path
 whitelist_file "#{install_dir}/embedded/lib/ruby/gems/#{ruby_abi_version}/gems/sqlite3-.*"
