@@ -73,6 +73,12 @@ build do
     # configure script cannot handle.
     # TODO: Do other OSes need this?  Is this strictly a mac thing?
     env = with_standard_compiler_flags
+    if version == "1.2.11" && mac_os_x?
+      # Newer Apple Clang defines TARGET_OS_MAC for modern macOS. Backport
+      # zlib's removal of the obsolete classic-Mac fdopen compatibility code.
+      patch source: "zlib-1.2.11-macos-fdopen.patch", plevel: 1, env: env
+    end
+
     if freebsd?
       # FreeBSD 10+ gets cranky if zlib is not compiled in a
       # position-independent way.

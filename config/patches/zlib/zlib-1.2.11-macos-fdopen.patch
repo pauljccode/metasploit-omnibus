@@ -1,0 +1,28 @@
+Backport the classic-Mac hunk from upstream zlib commit:
+https://github.com/madler/zlib/commit/4bd9a71f3539b5ce47f0c67ab5e01f3196dc8ef9
+
+Newer Apple Clang predefines TARGET_OS_MAC for modern macOS, incorrectly
+enabling obsolete fdopen compatibility code. Adapt the upstream hunk to
+1.2.11's whitespace; leave the other platform hunks out of this macOS patch.
+
+--- a/zutil.h
++++ b/zutil.h
+@@ -130,17 +130,8 @@
+ #  endif
+ #endif
+ 
+-#if defined(MACOS) || defined(TARGET_OS_MAC)
++#if defined(MACOS)
+ #  define OS_CODE  7
+-#  ifndef Z_SOLO
+-#    if defined(__MWERKS__) && __dest_os != __be_os && __dest_os != __win32_os
+-#      include <unix.h> /* for fdopen */
+-#    else
+-#      ifndef fdopen
+-#        define fdopen(fd,mode) NULL /* No fdopen() */
+-#      endif
+-#    endif
+-#  endif
+ #endif
+ 
+ #ifdef __acorn
