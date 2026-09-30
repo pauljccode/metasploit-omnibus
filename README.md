@@ -159,6 +159,44 @@ xz -d local/cache/*.xz
 
 From OS X, first install XCode and the command line development tools. I use ruby, bundler, git, bison and flex from the Mac Homebrew project. The rest of the steps are identical to building on Ubuntu. A .pkg file will be under the pkg directory instead.
 
+## macOS updater checks
+
+The macOS updater preserves the architecture of an existing packaged Ruby.
+For a fresh installation, or a universal Ruby, it selects the native hardware
+architecture even when launched from a Rosetta shell. Before invoking Apple's
+installer it requires a successful download, a valid package signature, and
+Distribution metadata permitting that architecture.
+Architecture inspection uses macOS's built-in `file` command, so updating
+does not require Xcode command line tools or execution of the installed Ruby.
+
+Downloads use a private temporary directory, finite connection/transfer
+timeouts, HTTPS-only transfers and redirects, and cleanup on failure or
+interruption. The temporary directory is created under macOS's root-owned
+sticky `/private/tmp`, ignoring an inherited user-owned `TMPDIR`. A missing, partial, unsigned,
+or wrong-architecture package leaves the installation unchanged. Installer
+failures are reported to the caller, including when updating through `sudo`;
+changes already made by Apple's installer are not automatically rolled back.
+
+The release URL remains the existing macOS endpoint. If that endpoint only
+provides an Intel package, an arm64 installation receives a clear refusal
+instead of being overwritten. Publishing architecture-specific URLs or a
+universal release is a separate release-infrastructure change.
+
+Run the updater regression tests on macOS with Xcode command line tools
+(used to compile test fixtures) and Minitest installed:
+
+```sh
+ruby test/msfupdate_macos_test.rb
+```
+
+These exercise the production shell functions with controlled download,
+signature, architecture, and installer outcomes, using the real XML parser.
+They also interrupt a running download process group and verify cleanup. They
+compile arm64, Intel and universal executables and verify their detection with
+the real `file` command while developer tools are blocked from the updater's
+PATH. They do not install a package or establish acceptance of an officially
+signed release.
+
 ## Clean
 
 You can clean up all temporary files generated during the build process with

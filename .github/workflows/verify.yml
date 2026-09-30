@@ -388,6 +388,9 @@ jobs:
           cache-version: 4
           working-directory: metasploit-omnibus
 
+      - name: Test macOS updater
+        run: ruby metasploit-omnibus/test/msfupdate_macos_test.rb
+
       - name: Run omnibus
         run: |
           sudo mkdir -p /var/cache/omnibus
