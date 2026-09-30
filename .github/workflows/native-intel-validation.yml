@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
-          ref: 5fe32c23f53bf26d6f77176dd78c1fb20ad91acb
+          ref: c74c55ab006a02491f466298722ce4c2cbfb811d
           persist-credentials: false
           path: metasploit-omnibus
 
@@ -51,11 +51,11 @@ jobs:
           xcrun clang --version
           xcrun --sdk macosx --show-sdk-version
           df -h /
-          test "$(git -C metasploit-omnibus rev-parse HEAD)" = 5fe32c23f53bf26d6f77176dd78c1fb20ad91acb
+          test "$(git -C metasploit-omnibus rev-parse HEAD)" = c74c55ab006a02491f466298722ce4c2cbfb811d
           printf '\nworkers 4\n' >> metasploit-omnibus/omnibus.rb
           cat >> metasploit-omnibus/config/projects/metasploit-framework.rb <<'RUBY'
           override 'metasploit-framework', version: '4fbb40d779a5f9e78af69802ceccb2f5e6b0dc37'
-          build_version '6.5.6-native-intel-ci.1'
+          build_version '6.5.6-native-intel-ci.2'
           RUBY
           git -C metasploit-omnibus diff
 
@@ -81,6 +81,14 @@ jobs:
 
       - name: Verify built native package runtime
         run: |
+          ruby -r./validation/ci/verify_macos_package -e '
+            verifier = MacOSPackageVerifier.new("/opt/metasploit-framework", "x86_64")
+            verifier.send(:host_images).sort.each do |path|
+              output, status = Open3.capture2("/usr/bin/otool", "-L", path)
+              abort "Cannot inspect #{path}" unless status.success?
+              puts output if output.include?("/usr/local/") || output.include?("/opt/homebrew/")
+            end
+          '
           ruby validation/ci/verify_macos_package.rb --arch x86_64
           /opt/metasploit-framework/embedded/bin/ruby --disable=gems -rjson -e '
             manifest = JSON.parse(File.read("/opt/metasploit-framework/version-manifest.json"))
@@ -146,6 +154,7 @@ jobs:
           echo NATIVE_INTEL_PACKAGE_RUNTIME_PASSED
 
       - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-intel-validation-installers
