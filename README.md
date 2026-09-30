@@ -159,6 +159,44 @@ xz -d local/cache/*.xz
 
 From OS X, first install XCode and the command line development tools. I use ruby, bundler, git, bison and flex from the Mac Homebrew project. The rest of the steps are identical to building on Ubuntu. A .pkg file will be under the pkg directory instead.
 
+## Verifying native macOS packages
+
+After installing a macOS package, verify its host architecture and linked
+libraries before running the usual console and database smoke tests:
+
+```sh
+ruby scripts/verify_macos_package.rb --arch arm64
+```
+
+Use `--arch x86_64` for an Intel package. The expected architecture is explicit
+so an accidentally translated build cannot redefine the test's expectation.
+The verifier checks Mach-O executables in `embedded/bin`, shared libraries and
+Ruby extensions in `embedded/lib`, and their transitive dependencies. It rejects
+missing libraries, architecture mismatches, and links outside the package other
+than macOS system libraries. Host images must have loadable Mach-O types and
+macOS platform metadata; an arm64 iOS library is rejected. It also starts the
+packaged Ruby with gems disabled
+and verifies its reported platform and CPU. Universal libraries are accepted
+when they contain the expected architecture.
+
+Metasploit's target payload directories are excluded from the initial host
+inventory. A host dependency that points into those directories is still
+checked. Debug symbols, static archives, and build object files are not runtime
+libraries. System libraries in the macOS dyld shared cache need not exist as
+individual files on disk.
+
+To inspect an extracted package, pass `--root` with its expanded `Payload`
+directory. Use `--static-only` to avoid executing packaged Ruby; that mode does
+not prove runtime compatibility. These checks do not establish package signing,
+notarization, or successful installation and upgrades on a clean machine.
+
+The regression tests build small, real arm64, Intel, and universal Mach-O
+fixtures. Run them on macOS with Xcode command line tools and Minitest installed:
+
+```sh
+ruby test/verify_macos_package_test.rb
+```
+
 ## Clean
 
 You can clean up all temporary files generated during the build process with

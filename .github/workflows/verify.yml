@@ -365,10 +365,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - macos-14
-        ruby:
-          - 3.2.5
+        include:
+          - os: macos-14
+            arch: arm64
+            ruby: 3.2.5
 
     name: ${{ matrix.os }}
     steps:
@@ -388,6 +388,9 @@ jobs:
           cache-version: 4
           working-directory: metasploit-omnibus
 
+      - name: Test macOS package verifier
+        run: ruby metasploit-omnibus/test/verify_macos_package_test.rb
+
       - name: Run omnibus
         run: |
           sudo mkdir -p /var/cache/omnibus
@@ -406,6 +409,8 @@ jobs:
           /usr/bin/find metasploit-omnibus/pkg
           PACKAGE=$(pwd)/$(/usr/bin/find metasploit-omnibus/pkg/metasploit*.pkg | head -n 1)
           sudo installer -pkg ${PACKAGE} -target /
+
+          ruby metasploit-omnibus/scripts/verify_macos_package.rb --arch '${{ matrix.arch }}'
 
           /opt/metasploit-framework/bin/msfconsole -qx 'setg variable test; version; exit'
           /opt/metasploit-framework/bin/msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
