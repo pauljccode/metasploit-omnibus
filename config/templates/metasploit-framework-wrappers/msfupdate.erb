@@ -110,25 +110,90 @@ install_suse() {
   zypper install -y metasploit-framework
 }
 
-install_pkg()
+macos_update_architecture()
 {
-  (
-    cd ~/Downloads
+  MSF_INSTALL_ROOT=$1
+  # uname reports x86_64 when invoked through Rosetta. Query the hardware so
+  # fresh installs and universal runtimes select the native architecture.
+  if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
+    MSF_NATIVE_ARCH=arm64
+  else
+    MSF_NATIVE_ARCH=$(uname -m)
+  fi
+  case "$MSF_NATIVE_ARCH" in
+    arm64|x86_64) ;;
+    *) echo "Unsupported macOS architecture: $MSF_NATIVE_ARCH" >&2; return 1 ;;
+  esac
 
-    echo "Downloading package..."
-    curl -O "$DOWNLOAD_URI/osx/metasploitframework-latest.pkg"
-
-    echo "Checking signature..."
-
-    if pkgutil --check-signature metasploitframework-latest.pkg; then
-      echo "Installing package..."
-      installer -pkg metasploitframework-latest.pkg -target /
-    fi
-
-    echo "Cleaning up..."
-    rm -fv metasploitframework-latest.pkg
-  )
+  MSF_INSTALLED_RUBY="$MSF_INSTALL_ROOT/embedded/bin/ruby"
+  if [ -e "$MSF_INSTALLED_RUBY" ] || [ -L "$MSF_INSTALLED_RUBY" ]; then
+    # lipo is a developer-tool shim on a stock Mac and can open an Xcode
+    # installation prompt. file ships with macOS and inspects every slice
+    # without executing Ruby (which could itself require Rosetta).
+    MSF_RUBY_DESCRIPTION=$(LC_ALL=C file -bL "$MSF_INSTALLED_RUBY") || return 1
+    MSF_RUBY_ARCHS=$(printf '%s\n' "$MSF_RUBY_DESCRIPTION" |
+      sed -nE 's/^.*Mach-O 64-bit executable (arm64|x86_64)$/\1/p' | tr '\n' ' ')
+    case " $MSF_RUBY_ARCHS " in
+      *" $MSF_NATIVE_ARCH "*) echo "$MSF_NATIVE_ARCH" ;;
+      *" arm64 "*) echo arm64 ;;
+      *" x86_64 "*) echo x86_64 ;;
+      *) echo "Unsupported installed Ruby architecture: $MSF_RUBY_ARCHS" >&2; return 1 ;;
+    esac
+  else
+    echo "$MSF_NATIVE_ARCH"
+  fi
 }
+
+install_pkg()
+(
+  MSF_EXPECTED_ARCH=$(macos_update_architecture "${1:-/opt/metasploit-framework}") || exit 1
+  # sudo -E may preserve a user-owned TMPDIR. Use macOS's root-owned sticky
+  # temporary directory so another user cannot replace the verified package.
+  MSF_PKG_TMP=$(mktemp -d /private/tmp/msfupdate.XXXXXXXX) || exit 1
+  MSF_CURL_PID=
+  cleanup_pkg_update()
+  {
+    if [ -n "$MSF_CURL_PID" ]; then
+      kill "$MSF_CURL_PID" 2>/dev/null || :
+      wait "$MSF_CURL_PID" 2>/dev/null || :
+    fi
+    rm -rf "$MSF_PKG_TMP"
+  }
+  trap cleanup_pkg_update 0
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  MSF_PACKAGE="$MSF_PKG_TMP/metasploitframework-latest.pkg"
+
+  echo "Downloading package..."
+  curl --fail --show-error --location --connect-timeout 30 --max-time 600 \
+    --proto '=https' --proto-redir '=https' \
+    --output "$MSF_PACKAGE" "$DOWNLOAD_URI/osx/metasploitframework-latest.pkg" &
+  MSF_CURL_PID=$!
+  wait "$MSF_CURL_PID"
+  MSF_CURL_STATUS=$?
+  MSF_CURL_PID=
+  [ "$MSF_CURL_STATUS" -eq 0 ] || exit "$MSF_CURL_STATUS"
+
+  echo "Checking signature..."
+  pkgutil --check-signature "$MSF_PACKAGE" || exit $?
+  pkgutil --expand "$MSF_PACKAGE" "$MSF_PKG_TMP/expanded" || exit $?
+  MSF_PACKAGE_ARCHS=$(xmllint --nonet --xpath \
+    'normalize-space(/installer-gui-script/options/@hostArchitectures)' \
+    "$MSF_PKG_TMP/expanded/Distribution") || exit $?
+  MSF_PACKAGE_ARCHS=$(printf '%s' "$MSF_PACKAGE_ARCHS" | tr ',' ' ')
+  case " $MSF_PACKAGE_ARCHS " in
+    *" $MSF_EXPECTED_ARCH "*) ;;
+    *)
+      echo "Refusing package for '${MSF_PACKAGE_ARCHS:-unknown}': this installation requires $MSF_EXPECTED_ARCH." >&2
+      echo "The installed Metasploit has not been changed." >&2
+      exit 1
+      ;;
+  esac
+
+  echo "Installing $MSF_EXPECTED_ARCH package..."
+  installer -pkg "$MSF_PACKAGE" -target /
+)
 
 DOWNLOAD_URI=https://downloads.metasploit.com/data/releases/metasploit-framework
 PKGTYPE=unknown
@@ -155,8 +220,7 @@ if [ "$ID" -ne 0 ]; then
     exit 1
   else
     echo "Switching to root user to update the package"
-    sudo -E $0 $@
-    exit 0
+    exec sudo -E "$0" "$@"
   fi
 fi
 
