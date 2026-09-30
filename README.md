@@ -159,6 +159,22 @@ xz -d local/cache/*.xz
 
 From OS X, first install XCode and the command line development tools. I use ruby, bundler, git, bison and flex from the Mac Homebrew project. The rest of the steps are identical to building on Ubuntu. A .pkg file will be under the pkg directory instead.
 
+Use the Ruby version in `.ruby-version` for the Omnibus build environment.
+On Apple silicon, newer Apple Clang versions can reject the assembly bundled
+with the locked `ffi` gem with `invalid CFI advance_loc expression` (see
+[libffi issue 852](https://github.com/libffi/libffi/issues/852)). If this occurs
+during the initial `bundle install`, build that gem against Homebrew's libffi:
+
+```sh
+brew install libffi pkgconf
+PKG_CONFIG_PATH="$(brew --prefix libffi)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+  BUNDLE_BUILD__FFI=--enable-system-libffi bundle install
+```
+
+This preserves the gem lockfile and applies the libffi selection to the
+Omnibus bootstrap dependencies. Omnibus separately builds the libraries
+included in the resulting Metasploit package.
+
 ## Clean
 
 You can clean up all temporary files generated during the build process with
