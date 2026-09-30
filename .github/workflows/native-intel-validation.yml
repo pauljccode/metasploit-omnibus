@@ -1,0 +1,157 @@
+name: Native Intel validation
+
+# Fork-only validation. The proposed upstream branch has no workflow changes.
+on:
+  push:
+    branches:
+      - ci/native-macos-validation
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native_intel:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15-intel
+        ruby:
+          - 3.2.5
+
+    name: Native Intel package build and runtime
+    steps:
+      - name: Checkout omnibus
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          ref: 5fe32c23f53bf26d6f77176dd78c1fb20ad91acb
+          persist-credentials: false
+          path: metasploit-omnibus
+
+      - name: Checkout validation helpers
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: validation
+
+      - name: Assert native Intel runner and record inputs
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 0
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun clang --version
+          xcrun --sdk macosx --show-sdk-version
+          df -h /
+          test "$(git -C metasploit-omnibus rev-parse HEAD)" = 5fe32c23f53bf26d6f77176dd78c1fb20ad91acb
+          printf '\nworkers 4\n' >> metasploit-omnibus/omnibus.rb
+          cat >> metasploit-omnibus/config/projects/metasploit-framework.rb <<'RUBY'
+          override 'metasploit-framework', version: '4fbb40d779a5f9e78af69802ceccb2f5e6b0dc37'
+          build_version '6.5.6-native-intel-ci.1'
+          RUBY
+          git -C metasploit-omnibus diff
+
+      - name: Setup Ruby
+        env:
+          BUNDLE_FORCE_RUBY_PLATFORM: true
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          cache-version: native-intel-validation-1
+          working-directory: metasploit-omnibus
+
+      - name: Run omnibus
+        run: |
+          sudo mkdir -p /var/cache/omnibus
+          sudo mkdir -p /opt/metasploit-framework
+          sudo chown `whoami` /var/cache/omnibus
+          sudo chown `whoami` /opt/metasploit-framework
+
+          cd metasploit-omnibus
+          make
+
+      - name: Verify built native package runtime
+        run: |
+          ruby validation/ci/verify_macos_package.rb --arch x86_64
+          /opt/metasploit-framework/embedded/bin/ruby --disable=gems -rjson -e '
+            manifest = JSON.parse(File.read("/opt/metasploit-framework/version-manifest.json"))
+            abort "Unexpected Framework revision" unless manifest.fetch("software").fetch("metasploit-framework").fetch("locked_version") == "4fbb40d779a5f9e78af69802ceccb2f5e6b0dc37"
+          '
+          shasum -a 256 metasploit-omnibus/pkg/*.pkg
+
+      - name: Test artifact
+        run: |
+          echo "Testing artifact"
+
+          sudo rm -rf /opt/metasploit-framework
+          packages=("$PWD"/metasploit-omnibus/pkg/metasploit*.pkg)
+          test "${#packages[@]}" = 1
+          test -f "${packages[0]}"
+          PACKAGE=${packages[0]}
+          sudo installer -pkg "${PACKAGE}" -target /
+          ruby validation/ci/verify_macos_package.rb --arch x86_64
+
+          /opt/metasploit-framework/bin/msfconsole -qx 'setg variable test; version; exit'
+          /opt/metasploit-framework/bin/msfvenom -p generic/custom PAYLOADSTR=native-build-validation -a x64 --platform osx -f raw -o test.bin
+          printf %s native-build-validation > expected.bin
+          cmp expected.bin test.bin
+          /opt/metasploit-framework/bin/msfd -h
+          /opt/metasploit-framework/bin/msfrpc -h
+          /opt/metasploit-framework/bin/msfrpcd -h
+          /opt/metasploit-framework/bin/msfdb -h
+          /opt/metasploit-framework/bin/msfbinscan -h
+          /opt/metasploit-framework/bin/msfrop -h
+          /opt/metasploit-framework/bin/msfelfscan -h
+          /opt/metasploit-framework/bin/msfmachscan -h
+          /opt/metasploit-framework/bin/msfpescan -h
+          # Production updater transport is outside this unsigned build test.
+
+          # Test database connectivity
+          /opt/metasploit-framework/bin/msfdb init
+          /opt/metasploit-framework/bin/msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
+          grep -q "Connected" /tmp/db_status.txt
+
+          # Test TCP connection (exercises libpq SSL code path)
+          /opt/metasploit-framework/embedded/bin/ruby -ryaml -e '
+            cfg = YAML.load_file(File.expand_path("~/.msf4/database.yml"), aliases: true)
+            prod = cfg["production"]
+            prod["host"] = "127.0.0.1"
+            prod["port"] = prod.fetch("port", 5432)
+            prod.delete("socket")
+            File.write(File.expand_path("~/.msf4/database.yml"), YAML.dump(cfg))
+          '
+          /opt/metasploit-framework/bin/msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
+          grep -q "Connected" /tmp/db_status.txt
+
+      - name: Verify native SQL and stop database
+        run: |
+          cd /opt/metasploit-framework/embedded/framework
+          /opt/metasploit-framework/embedded/bin/ruby -rbundler/setup -rpg -ryaml -e '
+            config = YAML.safe_load(File.read(File.expand_path("~/.msf4/database.yml")), aliases: true).fetch("production")
+            options = { host: "127.0.0.1", port: config.fetch("port", 5432), connect_timeout: 10 }
+            { "database" => :dbname, "username" => :user, "password" => :password }.each { |key, parameter| options[parameter] = config[key] if config.key?(key) }
+            PG.connect(options) { |connection| abort "SQL query failed" unless connection.exec("SELECT 40 + 2").getvalue(0, 0) == "42" }
+            puts "NATIVE_INTEL_SQL_QUERY_PASSED"
+          '
+          /opt/metasploit-framework/bin/msfdb stop --component database
+          echo NATIVE_INTEL_PACKAGE_RUNTIME_PASSED
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-intel-validation-installers
+          path: |
+            metasploit-omnibus/pkg/*.pkg
+            metasploit-omnibus/pkg/*.rpm
+            metasploit-omnibus/pkg/*.msi
+            metasploit-omnibus/pkg/*.deb
+          retention-days: 7
