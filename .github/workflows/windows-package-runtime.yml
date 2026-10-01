@@ -1,0 +1,152 @@
+name: Windows packaged runtime and SQL
+
+on:
+  push:
+    branches: [ci/windows-package-runtime]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  windows_testing:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+
+    name: Packaged runtime and SQL (${{ matrix.os }})
+    steps:
+
+      - uses: actions/checkout@v4
+        with:
+          path: validation-source
+
+      - name: Verify tested package provenance
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $run = gh api repos/pauljccode/metasploit-omnibus/actions/runs/36884193529 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Run metadata unavailable' }
+          if ($run.head_sha -ne '6c282763aa54d30a9962fdd4718736a0e5765488' -or $run.run_attempt -ne 1 -or $run.conclusion -ne 'success') { throw 'Package source run did not pass with the expected revision' }
+          $response = gh api repos/pauljccode/metasploit-omnibus/actions/runs/36884193529/artifacts | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact metadata unavailable' }
+          $artifacts = @($response.artifacts | Where-Object { $_.name -eq 'metasploit-windows-installers' })
+          if ($artifacts.Count -ne 1 -or $artifacts[0].expired) { throw 'Expected a single retained MSI artifact' }
+          if ($artifacts[0].id -ne 11174404498 -or $artifacts[0].digest -ne 'sha256:acce0044259f90e7775f71a2946e89b2f5b4c050d06a4c27d9568f92bb1edbdf') { throw 'MSI artifact identity or digest changed' }
+          $artifacts[0] | ConvertTo-Json -Depth 8
+
+      - uses: actions/download-artifact@v4
+        name: Download Windows arifacts
+        id: download_windows_artifacts
+        with:
+          name: metasploit-windows-installers
+          github-token: ${{ github.token }}
+          run-id: 36884193529
+          path: metasploit-omnibus
+
+      - name: Install artifact
+        shell: pwsh
+        run: |
+          Set-PSDebug -Trace 1
+          echo "Testing artifact"
+
+          echo '' > debug.log
+          $artifact = (Get-ChildItem -Path "metasploit-omnibus/*.msi")[0].Name
+          $install_process = Start-Process msiexec.exe -ArgumentList "/i metasploit-omnibus\$artifact /quiet /qn /l*v debug.log" -NoNewWindow -PassThru
+          $install_process_handle = $install_process.Handle # cache proc.Handle - https://stackoverflow.com/questions/10262231/obtaining-exitcode-using-start-process-and-waitforexit-instead-of-wait
+          $log_process = Start-Process "powershell" "Get-Content -Path debug.log -Wait" -NoNewWindow -PassThru
+          $install_process.WaitForExit()
+          $log_process.Kill()
+          echo "finished install"
+          Exit $install_process.ExitCode
+
+      - name: Verify installed Bootsnap correction
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-bootsnap-package.rb D:/metasploit-framework
+          Exit $LASTEXITCODE
+
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfd -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrpc -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrpcd -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfdb -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfbinscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrop -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfelfscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfmachscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfpescan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfconsole -qx 'setg variable test; version; exit'
+          Exit $LASTEXITCODE
+
+      - name: Test database connectivity
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfdb init
+          # Dump PG logs for debugging if init fails
+          $logFile = Join-Path $env:USERPROFILE ".msf4\db\log"
+          if (Test-Path $logFile) { echo "=== PostgreSQL log ==="; Get-Content $logFile; echo "===" }
+          $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
+          echo $output
+          if ($output -notmatch "Connected") { Exit 1 }
+
+      - name: Test TCP database connection
+        shell: pwsh
+        run: |
+          # Rewrite database.yml to force TCP connection (exercises libpq SSL code path)
+          d:\metasploit-framework\embedded\bin\ruby.exe -ryaml -e "
+            cfg = YAML.load_file(File.expand_path('~/.msf4/database.yml'), aliases: true)
+            prod = cfg['production']
+            prod['host'] = '127.0.0.1'
+            prod['port'] = prod.fetch('port', 5432)
+            prod.delete('socket')
+            File.write(File.expand_path('~/.msf4/database.yml'), YAML.dump(cfg))
+          "
+          $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
+          echo $output
+          if ($output -notmatch "Connected") { Exit 1 }
+
+      - name: Execute real SQL through the packaged PostgreSQL driver
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-windows-database-query.rb
+          Exit $LASTEXITCODE
