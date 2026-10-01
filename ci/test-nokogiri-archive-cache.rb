@@ -4,6 +4,7 @@ require "minitest/autorun"
 require "tmpdir"
 require "yaml"
 require_relative "nokogiri-archive-cache"
+require_relative "verify-nokogiri-source-cache"
 
 class NokogiriArchiveCacheTest < Minitest::Test
   def setup
@@ -81,6 +82,36 @@ class NokogiriArchiveCacheTest < Minitest::Test
     File.write(path, { "schema" => "stale" }.to_yaml)
     assert_raises(RuntimeError) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
     assert_equal({ "schema" => "stale" }, YAML.safe_load_file(path))
+  end
+
+  def verify_receipt
+    NokogiriSourceCacheReceipt.verify(@cache, gem_directory: @gem_dir,
+      sha256: @checksum, ruby_platform: RUBY_PLATFORM)
+  end
+
+  def test_receipt_verification_survives_nokogiri_source_cleanup
+    capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) }
+    FileUtils.remove_entry(File.join(@gem_dir, "ports"))
+    assert_equal @checksum, verify_receipt.fetch("sha256")
+    refute File.exist?(@destination)
+  end
+
+  def test_receipt_does_not_mask_changed_cache_or_gem_metadata
+    capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) }
+    File.binwrite(@source, "changed")
+    assert_raises(RuntimeError) { verify_receipt }
+    File.binwrite(@source, @bytes)
+    dependency("1.18", "0" * 64)
+    assert_raises(RuntimeError) { verify_receipt }
+  end
+
+  def test_receipt_from_another_gem_directory_is_rejected
+    capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) }
+    path = File.join(@cache, "source-cache-use.yml")
+    receipt = YAML.safe_load_file(path)
+    receipt["gem_directory"] += "-other"
+    File.write(path, receipt.to_yaml)
+    assert_raises(RuntimeError) { verify_receipt }
   end
 
   def test_hook_seeds_before_delegating_and_leaves_other_gems_alone
