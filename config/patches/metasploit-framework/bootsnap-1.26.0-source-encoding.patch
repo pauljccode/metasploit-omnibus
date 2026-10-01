@@ -1,0 +1,12 @@
+diff --git a/lib/bootsnap/compile_cache/iseq.rb b/lib/bootsnap/compile_cache/iseq.rb
+index 9a4208d..1caa67c 100644
+--- a/lib/bootsnap/compile_cache/iseq.rb
++++ b/lib/bootsnap/compile_cache/iseq.rb
+@@ -73,5 +73,6 @@ module Bootsnap
+               if has_ruby_bug_22023_bis
+                 def compile_file_prism(path, options = nil)
+-                  compile_prism(::File.read(path, encoding: Encoding::UTF_8), path, path, nil, options)
++                  source = ::File.read(path, external_encoding: Encoding::UTF_8, internal_encoding: nil)
++                  compile_prism(source, path, path, nil, options)
+                 end
+               end

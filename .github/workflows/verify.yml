@@ -557,6 +557,12 @@ jobs:
           rem and the ridk.cmd Ruby installer will forcibly kill the msys2 process before attempting to install ruby
           ruby bin/omnibus build metasploit-framework
 
+      - name: Verify built Bootsnap correction
+        shell: pwsh
+        run: |
+          ruby metasploit-omnibus/ci/verify-bootsnap-package.rb C:/metasploit-framework
+          Exit $LASTEXITCODE
+
       - name: Verify production source cache receipt
         shell: pwsh
         run: |
@@ -603,6 +609,10 @@ jobs:
     name: ${{ matrix.os }} testing
     steps:
 
+      - uses: actions/checkout@v4
+        with:
+          path: validation-source
+
       - uses: actions/download-artifact@v4
         name: Download Windows arifacts
         id: download_windows_artifacts
@@ -625,6 +635,12 @@ jobs:
           $log_process.Kill()
           echo "finished install"
           Exit $install_process.ExitCode
+
+      - name: Verify installed Bootsnap correction
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-bootsnap-package.rb D:/metasploit-framework
+          Exit $LASTEXITCODE
 
       - shell: pwsh
         run: |
@@ -697,3 +713,9 @@ jobs:
           $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
           echo $output
           if ($output -notmatch "Connected") { Exit 1 }
+
+      - name: Query the packaged database over TCP
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-windows-database-query.rb
+          Exit $LASTEXITCODE
