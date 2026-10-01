@@ -151,6 +151,11 @@ build do
   # native extension compilation (Error 71: EEXIST).
   bundle_env['MAKE'] = mac_os_x? ? 'make' : 'make -j4'
   bundle_env['BUNDLE_FORCE_RUBY_PLATFORM'] = 'true'
+  # Omnibus clears inherited Ruby options. Pass the build-only source cache
+  # explicitly when Windows CI opts in; it is not installed in the package.
+  if windows? && ENV['MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD']
+    bundle_env['RUBYOPT'] = "-r#{ENV.fetch('MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD')}"
+  end
   bundle "install --jobs=4 --verbose", env: bundle_env
 
   if windows?

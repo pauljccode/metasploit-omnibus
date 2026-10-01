@@ -523,6 +523,17 @@ jobs:
           repository: rapid7/metasploit-framework
           path: metasploit-framework
 
+      - name: Test source cache helper
+        shell: pwsh
+        run: |
+          ruby metasploit-omnibus/ci/test-nokogiri-archive-cache.rb
+          Exit $LASTEXITCODE
+
+      - name: Prefetch verified Nokogiri source
+        id: source_cache
+        shell: pwsh
+        run: ./metasploit-omnibus/ci/prepare-nokogiri-source-cache.ps1
+
       - name: Extract xz files
         run: |
           cd metasploit-omnibus
@@ -533,13 +544,33 @@ jobs:
         shell: cmd
         env:
           MSYSTEM: MINGW64
+          MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD: ${{ steps.source_cache.outputs.preload }}
         run: |
           cd metasploit-omnibus
           make dependencies
+          if errorlevel 1 exit /b 1
+
+          ruby ci/test-omnibus-cache-environment.rb
+          if errorlevel 1 exit /b 1
 
           rem Don't run the main build itself under `make`, as the process will be spawned under msys2
           rem and the ridk.cmd Ruby installer will forcibly kill the msys2 process before attempting to install ruby
           ruby bin/omnibus build metasploit-framework
+
+      - name: Verify production source cache receipt
+        shell: pwsh
+        run: |
+          ruby metasploit-omnibus/ci/verify-nokogiri-source-cache.rb
+          Exit $LASTEXITCODE
+
+      - name: Retain source cache receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-source-cache-receipt
+          path: ${{ runner.temp }}/msf-nokogiri-source-cache/source-cache-use.yml
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
