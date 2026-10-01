@@ -37,6 +37,21 @@ module NokogiriArchiveCache
         File.rename(temporary.path, destination)
       end
     end
+    receipt = {
+      "schema" => 1,
+      "gem_directory" => File.expand_path(gem_dir).tr("\\", "/"),
+      "archive" => filename,
+      "sha256" => checksum,
+      "ruby_version" => RUBY_VERSION,
+      "ruby_platform" => RUBY_PLATFORM
+    }
+    receipt_path = File.join(cache_dir, "source-cache-use.yml")
+    if File.exist?(receipt_path)
+      previous = YAML.safe_load_file(receipt_path, aliases: false)
+      raise "Conflicting Nokogiri source cache receipt" unless previous == receipt
+    else
+      File.write(receipt_path, YAML.dump(receipt), mode: "wx")
+    end
     puts "NOKOGIRI_SOURCE_CACHE_VERIFIED #{filename} sha256=#{checksum}"
   end
 

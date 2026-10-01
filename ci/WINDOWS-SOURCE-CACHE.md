@@ -35,3 +35,8 @@ separate network dependencies; this cache addresses only the libiconv failure.
 Run the helper's tests with `ruby ci/test-nokogiri-archive-cache.rb`. They include
 real RubyGems extraction/extension-build ordering and rejection of corrupt or
 changed inputs. These tests do not replace the full Windows build/runtime run.
+
+The helper also writes a use receipt after verifying the archive in the extracted
+gem. CI checks its embedded Nokogiri path and rehashes the archive before uploading
+the MSI. The receipt is retained separately because Omnibus suppresses successful
+child-command output. Existing conflicting receipts are rejected.

@@ -118,6 +118,21 @@ jobs:
           rem and the ridk.cmd Ruby installer will forcibly kill the msys2 process before attempting to install ruby
           ruby bin/omnibus build metasploit-framework
 
+      - name: Verify production source cache receipt
+        shell: pwsh
+        run: |
+          ruby metasploit-omnibus/ci/verify-nokogiri-source-cache.rb
+          Exit $LASTEXITCODE
+
+      - name: Retain source cache receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-source-cache-receipt
+          path: ${{ runner.temp }}/msf-nokogiri-source-cache/source-cache-use.yml
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

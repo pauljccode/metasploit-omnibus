@@ -6,6 +6,7 @@ $uri = 'https://nokogiri.org/mirror/gnu/libiconv/libiconv-1.18.tar.gz'
 $expected = '3b08f5f4f9b4eb82f151a7040bfd6fe6c6fb922efe4b1659c66ea933276965e8'
 $cacheDir = Join-Path $env:RUNNER_TEMP 'msf-nokogiri-source-cache'
 New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+if (Test-Path (Join-Path $cacheDir 'source-cache-use.yml')) { throw 'Unexpected stale source cache receipt' }
 $archive = Join-Path $cacheDir 'libiconv-1.18.tar.gz'
 $partial = "$archive.part"
 if (Test-Path $partial) { throw "Unexpected partial download: $partial" }

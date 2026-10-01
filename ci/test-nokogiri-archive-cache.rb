@@ -33,6 +33,9 @@ class NokogiriArchiveCacheTest < Minitest::Test
     capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) }
     assert_equal @bytes, File.binread(@destination)
     assert_equal original, File.binread(File.join(@gem_dir, "dependencies.yml"))
+    receipt = YAML.safe_load_file(File.join(@cache, "source-cache-use.yml"))
+    assert_equal @checksum, receipt.fetch("sha256")
+    assert_equal File.expand_path(@gem_dir).tr("\\", "/"), receipt.fetch("gem_directory")
     assert_empty Dir.glob(File.join(File.dirname(@destination), ".libiconv-*"))
   end
 
@@ -40,6 +43,7 @@ class NokogiriArchiveCacheTest < Minitest::Test
     File.binwrite(@source, "wrong")
     assert_raises(RuntimeError) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
     refute File.exist?(@destination)
+    refute File.exist?(File.join(@cache, "source-cache-use.yml"))
   end
 
   def test_changed_dependency_checksum_is_not_overridden
@@ -70,6 +74,13 @@ class NokogiriArchiveCacheTest < Minitest::Test
   def test_verified_existing_archive_can_be_reused
     2.times { capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) } }
     assert_equal @bytes, File.binread(@destination)
+  end
+
+  def test_conflicting_receipt_is_not_replaced
+    path = File.join(@cache, "source-cache-use.yml")
+    File.write(path, { "schema" => "stale" }.to_yaml)
+    assert_raises(RuntimeError) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
+    assert_equal({ "schema" => "stale" }, YAML.safe_load_file(path))
   end
 
   def test_hook_seeds_before_delegating_and_leaves_other_gems_alone
