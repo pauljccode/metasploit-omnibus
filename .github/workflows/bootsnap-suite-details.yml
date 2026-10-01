@@ -1,0 +1,53 @@
+name: Bootsnap Windows suite details
+
+on:
+  push:
+    branches: [ci/bootsnap-suite-details]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootsnap_tests:
+    name: Bootsnap upstream suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      TESTOPTS: --verbose
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: packaging
+      - uses: actions/checkout@v4
+        with:
+          repository: rails/bootsnap
+          ref: 384fe647c1273061173c2b4678b194ddc64de622
+          path: bootsnap
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4.9'
+          working-directory: bootsnap
+          bundler-cache: true
+      - name: Original regression and corrected upstream suite on Windows
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call ridk enable
+          if errorlevel 1 exit /b 1
+          ruby packaging/ci/test-bootsnap-upstream.rb bootsnap packaging suite-logs
+      - name: Original regression and corrected upstream suite on Linux
+        if: runner.os != 'Windows'
+        run: ruby packaging/ci/test-bootsnap-upstream.rb bootsnap packaging suite-logs
+      - name: Retain upstream suite logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootsnap-suite-${{ matrix.os }}
+          path: suite-logs
+          if-no-files-found: error
+          retention-days: 7
