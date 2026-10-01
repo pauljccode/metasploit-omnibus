@@ -75,6 +75,8 @@ jobs:
           if ($exitCode -eq 0) { throw 'Original startup unexpectedly passed' }
           if ($output -notmatch 'Encoding::UndefinedConversionError' -or $output -notmatch 'UTF-8 to ASCII-8BIT') { throw 'Original failure differs' }
           Write-Output 'BOOTSNAP_ORIGINAL_ENCODING_FAILURE_REPRODUCED'
+          # The failure is the negative control; both assertions above must pass.
+          Exit 0
 
       - name: Probe candidate compiler behavior on embedded Windows Ruby
         shell: pwsh
