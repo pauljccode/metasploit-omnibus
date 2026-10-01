@@ -20,7 +20,13 @@ the cached bytes. MiniPortile independently verifies them again on extraction.
 Missing archives, changed dependency identities and corrupt bytes fail closed.
 Other gems delegate directly to RubyGems. No gem source or checksum is modified.
 
-The preload applies only to the build step. It is not installed in the package
+Omnibus intentionally removes inherited `RUBYOPT`. A Windows-only, opt-in recipe
+setting passes the preload explicitly to the embedded `bundle install` command.
+The original recipe behavior is unchanged when the cache option is absent.
+`test-omnibus-cache-environment.rb` uses the locked Omnibus implementation to
+check both inherited-option removal and explicit command-environment forwarding.
+
+The preload applies only to that command. It is not installed in the package
 and is absent from the separate fresh-runner MSI installation/runtime job.
 The workflow retains the original Windows runtime checks and pins the Framework
 revision used by the earlier failed builds. MSYS2 and RubyGems downloads remain

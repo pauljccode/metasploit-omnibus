@@ -106,10 +106,13 @@ jobs:
         shell: cmd
         env:
           MSYSTEM: MINGW64
-          RUBYOPT: ${{ steps.source_cache.outputs.rubyopt }}
+          MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD: ${{ steps.source_cache.outputs.preload }}
         run: |
           cd metasploit-omnibus
           make dependencies
+
+          ruby ci/test-omnibus-cache-environment.rb
+          if errorlevel 1 exit /b 1
 
           rem Don't run the main build itself under `make`, as the process will be spawned under msys2
           rem and the ridk.cmd Ruby installer will forcibly kill the msys2 process before attempting to install ruby

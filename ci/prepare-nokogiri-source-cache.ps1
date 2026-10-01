@@ -29,5 +29,5 @@ if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $expec
 $hook = (Join-Path $PSScriptRoot 'nokogiri-archive-cache.rb').Replace('\', '/')
 if ($hook -match '\s') { throw 'Ruby preload path must not contain whitespace' }
 "MSF_NOKOGIRI_SOURCE_CACHE=$cacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-"rubyopt=-r$hook" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+"preload=$hook" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 Write-Output "NOKOGIRI_PREFETCH_VERIFIED libiconv-1.18.tar.gz sha256=$expected"
