@@ -1,0 +1,172 @@
+name: Windows Bootsnap candidate diagnosis
+
+on:
+  push:
+    branches: [ci/windows-bootsnap-diagnosis]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  windows_testing:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+
+    name: Windows Bootsnap candidate diagnosis
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: diagnostics
+
+      - name: Verify existing artifact provenance
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $run = gh api repos/pauljccode/metasploit-omnibus/actions/runs/36815894758 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Run metadata unavailable' }
+          if ($run.head_sha -ne '8049b9a62e6174667af9e3853cc41950e2d77567' -or $run.run_attempt -ne 1) { throw 'Unexpected source run' }
+          $artifact = gh api repos/pauljccode/metasploit-omnibus/actions/artifacts/11142730061 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact metadata unavailable' }
+          if ($artifact.workflow_run.id -ne 36815894758 -or $artifact.name -ne 'metasploit-windows-installers' -or $artifact.expired) { throw 'Unexpected artifact identity' }
+          if ($artifact.digest -ne 'sha256:19f8f2dbfe7194cf2a65e014c1a69bac4e834b8adf5249fe9ebd4128f929fe49') { throw 'Artifact digest changed' }
+          $artifact | ConvertTo-Json -Depth 8
+
+      - uses: actions/download-artifact@v4
+        name: Download Windows arifacts
+        id: download_windows_artifacts
+        with:
+          name: metasploit-windows-installers
+          github-token: ${{ github.token }}
+          run-id: 36815894758
+          path: metasploit-omnibus
+
+      - name: Install artifact
+        shell: pwsh
+        run: |
+          Set-PSDebug -Trace 1
+          echo "Testing artifact"
+
+          echo '' > debug.log
+          $artifact = (Get-ChildItem -Path "metasploit-omnibus/*.msi")[0].Name
+          $install_process = Start-Process msiexec.exe -ArgumentList "/i metasploit-omnibus\$artifact /quiet /qn /l*v debug.log" -NoNewWindow -PassThru
+          $install_process_handle = $install_process.Handle # cache proc.Handle - https://stackoverflow.com/questions/10262231/obtaining-exitcode-using-start-process-and-waitforexit-instead-of-wait
+          $log_process = Start-Process "powershell" "Get-Content -Path debug.log -Wait" -NoNewWindow -PassThru
+          $install_process.WaitForExit()
+          $log_process.Kill()
+          echo "finished install"
+          Exit $install_process.ExitCode
+
+      - name: Reproduce original Bootsnap startup failure
+        shell: pwsh
+        run: |
+          $output = & d:\metasploit-framework\bin\msfconsole -qx 'version; exit' 2>&1 | Out-String
+          $exitCode = $LASTEXITCODE
+          $output | Set-Content -Encoding utf8 bootsnap-baseline.log
+          Write-Output $output
+          if ($exitCode -eq 0) { throw 'Original startup unexpectedly passed' }
+          if ($output -notmatch 'Encoding::UndefinedConversionError' -or $output -notmatch 'UTF-8 to ASCII-8BIT') { throw 'Original failure differs' }
+          Write-Output 'BOOTSNAP_ORIGINAL_ENCODING_FAILURE_REPRODUCED'
+
+      - name: Probe candidate compiler behavior on embedded Windows Ruby
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\embedded\bin\ruby.exe diagnostics/ci/probe-bootsnap-compiler.rb
+          Exit $LASTEXITCODE
+
+      - name: Apply exact-source candidate in disposable installation
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\embedded\bin\ruby.exe diagnostics/ci/apply-bootsnap-encoding-candidate.rb
+          Exit $LASTEXITCODE
+
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfd -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrpc -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrpcd -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfdb -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfbinscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrop -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfelfscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfmachscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfpescan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfconsole -qx 'setg variable test; version; exit'
+          Exit $LASTEXITCODE
+
+      - name: Test database connectivity
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfdb init
+          # Dump PG logs for debugging if init fails
+          $logFile = Join-Path $env:USERPROFILE ".msf4\db\log"
+          if (Test-Path $logFile) { echo "=== PostgreSQL log ==="; Get-Content $logFile; echo "===" }
+          $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
+          echo $output
+          if ($output -notmatch "Connected") { Exit 1 }
+
+      - name: Test TCP database connection
+        shell: pwsh
+        run: |
+          # Rewrite database.yml to force TCP connection (exercises libpq SSL code path)
+          d:\metasploit-framework\embedded\bin\ruby.exe -ryaml -e "
+            cfg = YAML.load_file(File.expand_path('~/.msf4/database.yml'), aliases: true)
+            prod = cfg['production']
+            prod['host'] = '127.0.0.1'
+            prod['port'] = prod.fetch('port', 5432)
+            prod.delete('socket')
+            File.write(File.expand_path('~/.msf4/database.yml'), YAML.dump(cfg))
+          "
+          $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
+          echo $output
+          if ($output -notmatch "Connected") { Exit 1 }
+
+      - name: Retain diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-bootsnap-diagnostic-logs
+          path: |
+            bootsnap-baseline.log
+            debug.log
+          if-no-files-found: warn
+          retention-days: 7
