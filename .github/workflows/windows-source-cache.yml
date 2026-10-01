@@ -1,0 +1,242 @@
+name: Windows verified source cache
+
+on:
+  push:
+    branches: [ci/windows-source-cache]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+        ruby:
+          - 3.2.5
+
+    name: ${{ matrix.os }} compilation
+    steps:
+      # https://github.com/actions/runner-images/issues/5143
+      # https://github.com/actions/runner-images/issues/9701
+      - name: Install visual studio components
+        run: |
+          Set-Location "C:\Program Files (x86)\Microsoft Visual Studio\Installer\"
+          $InstallPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+          $componentsToRemove= @(
+            "Microsoft.VisualStudio.Component.VC.Redist.MSM"
+          )
+          [string]$workloadArgs = $componentsToRemove | ForEach-Object {" --add " +  $_}
+          $Arguments = ('/c', "vs_installer.exe", 'modify', '--installPath', "`"$InstallPath`"",$workloadArgs, '--quiet', '--norestart', '--nocache')
+          # should be run twice
+          $process = Start-Process -FilePath cmd.exe -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
+          $process = Start-Process -FilePath cmd.exe -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
+
+      - name: Checkout omnibus
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          path: metasploit-omnibus
+
+      - name: Update bundler version
+        # Github actions with Ruby requires Bundler 2.2.18+
+        # https://github.com/ruby/setup-ruby/tree/d2b39ad0b52eca07d23f3aa14fdf2a3fcc1f411c#windows
+        run: |
+          (Get-Content metasploit-omnibus\Gemfile.lock).Replace('   2.2.33', '   2.5.10') | Set-Content metasploit-omnibus\Gemfile.lock
+
+      - name: Setup Ruby
+        env:
+          BUNDLE_FORCE_RUBY_PLATFORM: true
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: false
+          cache-version: 4
+          working-directory: metasploit-omnibus
+          # Github actions with Ruby requires Bundler 2.2.18+
+          # https://github.com/ruby/setup-ruby/tree/d2b39ad0b52eca07d23f3aa14fdf2a3fcc1f411c#windows
+          bundler: 2.5.10
+
+      # If you need to build a custom version of pcaprub:
+      # - name: Checkout pcaprub
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: pcaprub/pcaprub
+      #     path: pcaprub
+      #     ref: '5440ca93dafd15e7d3bb009fc1bb9a15e80d03f9'
+
+      # - name: Create pcaprub gem
+      #   run: |
+      #     cd pcaprub
+      #     bundle
+      #     rake gem
+
+      # Checkout framework
+      - name: Checkout metasploit-framework code
+        uses: actions/checkout@v4
+        with:
+          repository: rapid7/metasploit-framework
+          path: metasploit-framework
+          ref: c9b3e525d1aba339ab4d995fa0b6af6d2db64f02
+
+      - name: Test source cache helper
+        shell: pwsh
+        run: |
+          ruby metasploit-omnibus/ci/test-nokogiri-archive-cache.rb
+          Exit $LASTEXITCODE
+
+      - name: Prefetch verified Nokogiri source
+        id: source_cache
+        shell: pwsh
+        run: ./metasploit-omnibus/ci/prepare-nokogiri-source-cache.ps1
+
+      - name: Extract xz files
+        run: |
+          cd metasploit-omnibus
+          xz -d local/cache/*.xz
+          ls local/cache
+
+      - name: Run omnibus
+        shell: cmd
+        env:
+          MSYSTEM: MINGW64
+          RUBYOPT: ${{ steps.source_cache.outputs.rubyopt }}
+        run: |
+          cd metasploit-omnibus
+          make dependencies
+
+          rem Don't run the main build itself under `make`, as the process will be spawned under msys2
+          rem and the ridk.cmd Ruby installer will forcibly kill the msys2 process before attempting to install ruby
+          ruby bin/omnibus build metasploit-framework
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: metasploit-windows-installers
+          path: |
+            metasploit-omnibus/pkg/*.pkg
+            metasploit-omnibus/pkg/*.rpm
+            metasploit-omnibus/pkg/*.msi
+            metasploit-omnibus/pkg/*.deb
+          retention-days: 7
+
+  # Ensure we can install the Windows installer on a fresh environment without any pre-existing dependencies.
+  # Additionally, running on the previous windows builder is not currently possible, as it currently hangs on
+  # on Github actions - but passes locally. The potential cause is logged to the debug.log file:
+  #
+  #     Info 1603.The file C:\Windows\system32\vcruntime140_1.dll is being held in use.  Close that application and retry.
+  #
+  windows_testing:
+    needs: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+
+    name: ${{ matrix.os }} testing
+    steps:
+
+      - uses: actions/download-artifact@v4
+        name: Download Windows arifacts
+        id: download_windows_artifacts
+        with:
+          name: metasploit-windows-installers
+          path: metasploit-omnibus
+
+      - name: Install artifact
+        shell: pwsh
+        run: |
+          Set-PSDebug -Trace 1
+          echo "Testing artifact"
+
+          echo '' > debug.log
+          $artifact = (Get-ChildItem -Path "metasploit-omnibus/*.msi")[0].Name
+          $install_process = Start-Process msiexec.exe -ArgumentList "/i metasploit-omnibus\$artifact /quiet /qn /l*v debug.log" -NoNewWindow -PassThru
+          $install_process_handle = $install_process.Handle # cache proc.Handle - https://stackoverflow.com/questions/10262231/obtaining-exitcode-using-start-process-and-waitforexit-instead-of-wait
+          $log_process = Start-Process "powershell" "Get-Content -Path debug.log -Wait" -NoNewWindow -PassThru
+          $install_process.WaitForExit()
+          $log_process.Kill()
+          echo "finished install"
+          Exit $install_process.ExitCode
+
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfd -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrpc -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrpcd -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfdb -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfbinscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfrop -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfelfscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfmachscan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfpescan -h
+          Exit $LASTEXITCODE
+      - shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfconsole -qx 'setg variable test; version; exit'
+          Exit $LASTEXITCODE
+
+      - name: Test database connectivity
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\bin\msfdb init
+          # Dump PG logs for debugging if init fails
+          $logFile = Join-Path $env:USERPROFILE ".msf4\db\log"
+          if (Test-Path $logFile) { echo "=== PostgreSQL log ==="; Get-Content $logFile; echo "===" }
+          $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
+          echo $output
+          if ($output -notmatch "Connected") { Exit 1 }
+
+      - name: Test TCP database connection
+        shell: pwsh
+        run: |
+          # Rewrite database.yml to force TCP connection (exercises libpq SSL code path)
+          d:\metasploit-framework\embedded\bin\ruby.exe -ryaml -e "
+            cfg = YAML.load_file(File.expand_path('~/.msf4/database.yml'), aliases: true)
+            prod = cfg['production']
+            prod['host'] = '127.0.0.1'
+            prod['port'] = prod.fetch('port', 5432)
+            prod.delete('socket')
+            File.write(File.expand_path('~/.msf4/database.yml'), YAML.dump(cfg))
+          "
+          $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
+          echo $output
+          if ($output -notmatch "Connected") { Exit 1 }
