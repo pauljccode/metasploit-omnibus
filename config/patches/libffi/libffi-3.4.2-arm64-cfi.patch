@@ -1,0 +1,25 @@
+Backport of libffi PR #857 for the pinned 3.4.2 source:
+https://github.com/libffi/libffi/pull/857
+Upstream merge: 8308bed5b2423878aa20d7884a99cf2e30b8daf7
+
+On Mach-O, a non-private symbol must not occur inside a CFI procedure.
+Start CFI after the function label, as in the upstream fix. This avoids
+invalid CFI advance_loc expressions with newer Apple Clang assemblers.
+
+--- a/src/aarch64/sysv.S
++++ b/src/aarch64/sysv.S
+@@ -79,2 +79,2 @@
+-	cfi_startproc
+-CNAME(ffi_call_SYSV):
++CNAME(ffi_call_SYSV):
++	cfi_startproc
+@@ -271,2 +271,2 @@
+-	cfi_startproc
+-CNAME(ffi_closure_SYSV):
++CNAME(ffi_closure_SYSV):
++	cfi_startproc
+@@ -503,2 +503,2 @@
+-	cfi_startproc
+-CNAME(ffi_go_closure_SYSV):
++CNAME(ffi_go_closure_SYSV):
++	cfi_startproc

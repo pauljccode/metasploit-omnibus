@@ -149,6 +149,12 @@ build do
   patch_env = env.dup
   patch_env["PATH"] = "/opt/freeware/bin:#{env["PATH"]}" if aix?
 
+  if version == "3.4.4" && mac_os_x?
+    # Backport Ruby #21629's public-header fix. Clang 21's warning makes
+    # native gems reject valid compiler flags during mkmf's -Werror probes.
+    patch source: "ruby-3.4.4-rstring-initialization.patch", plevel: 1, env: patch_env
+  end
+
   if version.satisfies?("~> 3.0.0")
     case version
     when "3.0.1"
