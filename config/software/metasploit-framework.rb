@@ -151,9 +151,26 @@ build do
   # native extension compilation (Error 71: EEXIST).
   bundle_env['MAKE'] = mac_os_x? ? 'make' : 'make -j4'
   bundle_env['BUNDLE_FORCE_RUBY_PLATFORM'] = 'true'
+  # Omnibus clears inherited Ruby options. Pass the build-only source cache
+  # explicitly when Windows CI opts in; it is not installed in the package.
+  if windows? && ENV['MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD']
+    bundle_env['RUBYOPT'] = "-r#{ENV.fetch('MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD')}"
+  end
   bundle "install --jobs=4 --verbose", env: bundle_env
 
   if windows?
+    bootsnap_iseq = "#{install_dir}/embedded/lib/ruby/gems/#{ruby_abi_version}/gems/bootsnap-1.26.0/lib/bootsnap/compile_cache/iseq.rb"
+    block "Verify Bootsnap source before encoding correction" do
+      require 'digest'
+      expected = '3c7da075a42441d09809421a6fdcfac1f25408ac5e27bdc8b5187bd80174862e'
+      unless File.file?(bootsnap_iseq) && Digest::SHA256.file(bootsnap_iseq).hexdigest == expected
+        raise 'Bootsnap version or source changed; review the temporary source-encoding correction'
+      end
+    end
+    # Preserve Ruby source bytes when Framework sets default_internal to binary.
+    # Temporary correction for Bootsnap 1.26.0; see ci/WINDOWS-PACKAGE.md.
+    patch source: "bootsnap-1.26.0-source-encoding.patch", target: bootsnap_iseq, plevel: 1, env: bundle_env
+
     # Copy required runtime DLLs from MSYS2 ucrt64 to embedded/bin.
     # Native gems (nokogiri, eventmachine, etc.) link against MSYS2's ucrt64
     # libraries during bundle install. These DLLs must be available at runtime.
