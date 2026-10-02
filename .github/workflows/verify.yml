@@ -95,10 +95,9 @@ jobs:
       - name: Checkout metasploit-framework code
         uses: actions/checkout@v4
         with:
-          repository: rapid7/metasploit-framework
+          repository: pauljccode/metasploit-framework
+          ref: c05d6329c2c28119bc8cd6f185e8d8ac3697f220
           path: metasploit-framework
-          # If testing a custom branch is required
-          # ref: 'update-bundler-version'
 
       - name: Run omnibus
         run: |
@@ -245,6 +244,7 @@ jobs:
           #!/bin/bash -ex
           find metasploit-omnibus/pkg
           $INSTALL_ARTIFACT
+          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
 
           mkdir ~/.msf4; touch ~/.msf4/initial_setup_complete
 
@@ -317,6 +317,10 @@ jobs:
     timeout-minutes: 15
     name: ubuntu-latest db connectivity test
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: validation-source
+
       - uses: actions/download-artifact@v4
         with:
           name: metasploit-ubuntu1804-x64-installers
@@ -326,6 +330,7 @@ jobs:
         run: |
           set -ex
           sudo dpkg -i pkg/metasploit-framework_*_amd64.deb
+          /opt/metasploit-framework/embedded/bin/ruby validation-source/ci/verify-database-readiness-package.rb /opt/metasploit-framework
           msfdb init
           msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
           grep -q "Connected" /tmp/db_status.txt
@@ -406,6 +411,7 @@ jobs:
           /usr/bin/find metasploit-omnibus/pkg
           PACKAGE=$(pwd)/$(/usr/bin/find metasploit-omnibus/pkg/metasploit*.pkg | head -n 1)
           sudo installer -pkg ${PACKAGE} -target /
+          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
 
           /opt/metasploit-framework/bin/msfconsole -qx 'setg variable test; version; exit'
           /opt/metasploit-framework/bin/msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
@@ -516,11 +522,16 @@ jobs:
       #     bundle
       #     rake gem
 
+      - name: Preserve Framework source line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       # Checkout framework
       - name: Checkout metasploit-framework code
         uses: actions/checkout@v4
         with:
-          repository: rapid7/metasploit-framework
+          repository: pauljccode/metasploit-framework
+          ref: c05d6329c2c28119bc8cd6f185e8d8ac3697f220
           path: metasploit-framework
 
       - name: Test source cache helper
@@ -556,6 +567,12 @@ jobs:
           rem Don't run the main build itself under `make`, as the process will be spawned under msys2
           rem and the ridk.cmd Ruby installer will forcibly kill the msys2 process before attempting to install ruby
           ruby bin/omnibus build metasploit-framework
+
+      - name: Verify built PostgreSQL readiness correction
+        shell: pwsh
+        run: |
+          ruby metasploit-omnibus/ci/verify-database-readiness-package.rb C:/metasploit-framework
+          Exit $LASTEXITCODE
 
       - name: Verify built Bootsnap correction
         shell: pwsh
@@ -635,6 +652,12 @@ jobs:
           $log_process.Kill()
           echo "finished install"
           Exit $install_process.ExitCode
+
+      - name: Verify installed PostgreSQL readiness correction
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-database-readiness-package.rb D:/metasploit-framework
+          Exit $LASTEXITCODE
 
       - name: Verify installed Bootsnap correction
         shell: pwsh
