@@ -1,0 +1,233 @@
+name: macOS proposal validation
+on:
+  push:
+    branches: [ci/macos-proposal-validation]
+permissions:
+  contents: read
+jobs:
+  verifier_package:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            ruby: 3.2.5
+
+    name: verifier package ${{ matrix.os }}
+    steps:
+      - name: Checkout omnibus
+        uses: actions/checkout@v4
+        with:
+          ref: 736539fd781ede9a91d858693ffa0a602bf6353b
+          submodules: true
+          path: metasploit-omnibus
+
+      - name: Verify source commit
+        run: test "$(git -C metasploit-omnibus rev-parse HEAD)" = '736539fd781ede9a91d858693ffa0a602bf6353b'
+
+      - name: Setup Ruby
+        env:
+          BUNDLE_FORCE_RUBY_PLATFORM: true
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          cache-version: 4
+          working-directory: metasploit-omnibus
+
+      - name: Test macOS package verifier
+        run: ruby metasploit-omnibus/test/verify_macos_package_test.rb
+
+      - name: Run omnibus
+        run: |
+          sudo mkdir -p /var/cache/omnibus
+          sudo mkdir -p /opt/metasploit-framework
+          sudo chown `whoami` /var/cache/omnibus
+          sudo chown `whoami` /opt/metasploit-framework
+
+          cd metasploit-omnibus
+          make
+
+      - name: Test artifact
+        run: |
+          echo "Testing artifact"
+
+          sudo rm -rf /opt/metasploit-framework
+          /usr/bin/find metasploit-omnibus/pkg
+          PACKAGE=$(pwd)/$(/usr/bin/find metasploit-omnibus/pkg/metasploit*.pkg | head -n 1)
+          sudo installer -pkg ${PACKAGE} -target /
+
+          ruby metasploit-omnibus/scripts/verify_macos_package.rb --arch '${{ matrix.arch }}'
+
+          /opt/metasploit-framework/bin/msfconsole -qx 'setg variable test; version; exit'
+          /opt/metasploit-framework/bin/msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
+          /opt/metasploit-framework/bin/msfd -h
+          /opt/metasploit-framework/bin/msfrpc -h
+          /opt/metasploit-framework/bin/msfrpcd -h
+          /opt/metasploit-framework/bin/msfdb -h
+          /opt/metasploit-framework/bin/msfbinscan -h
+          /opt/metasploit-framework/bin/msfrop -h
+          /opt/metasploit-framework/bin/msfelfscan -h
+          /opt/metasploit-framework/bin/msfmachscan -h
+          /opt/metasploit-framework/bin/msfpescan -h
+          # /opt/metasploit-framework/bin/msfupdate
+
+          # Test database connectivity
+          /opt/metasploit-framework/bin/msfdb init
+          /opt/metasploit-framework/bin/msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
+          grep -q "Connected" /tmp/db_status.txt
+
+          # Test TCP connection (exercises libpq SSL code path)
+          /opt/metasploit-framework/embedded/bin/ruby -ryaml -e '
+            cfg = YAML.load_file(File.expand_path("~/.msf4/database.yml"), aliases: true)
+            prod = cfg["production"]
+            prod["host"] = "127.0.0.1"
+            prod["port"] = prod.fetch("port", 5432)
+            prod.delete("socket")
+            File.write(File.expand_path("~/.msf4/database.yml"), YAML.dump(cfg))
+          '
+          /opt/metasploit-framework/bin/msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
+          grep -q "Connected" /tmp/db_status.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verifier-macos-installers
+          path: |
+            metasploit-omnibus/pkg/*.pkg
+            metasploit-omnibus/pkg/*.rpm
+            metasploit-omnibus/pkg/*.msi
+            metasploit-omnibus/pkg/*.deb
+          retention-days: 7
+
+  verifier_intel_tests:
+    name: verifier regression tests on Intel
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 736539fd781ede9a91d858693ffa0a602bf6353b
+      - name: Verify source commit
+        run: test "$(git rev-parse HEAD)" = '736539fd781ede9a91d858693ffa0a602bf6353b'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2.5'
+      - run: ruby test/verify_macos_package_test.rb
+
+  updater_package:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+        ruby:
+          - 3.2.5
+
+    name: updater package ${{ matrix.os }}
+    steps:
+      - name: Checkout omnibus
+        uses: actions/checkout@v4
+        with:
+          ref: 3f9fa8c8c2bb1de7a8933f1b4e61a929c094226d
+          submodules: true
+          path: metasploit-omnibus
+
+      - name: Verify source commit
+        run: test "$(git -C metasploit-omnibus rev-parse HEAD)" = '3f9fa8c8c2bb1de7a8933f1b4e61a929c094226d'
+
+      - name: Setup Ruby
+        env:
+          BUNDLE_FORCE_RUBY_PLATFORM: true
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          cache-version: 4
+          working-directory: metasploit-omnibus
+
+      - name: Test macOS updater
+        run: ruby metasploit-omnibus/test/msfupdate_macos_test.rb
+
+      - name: Run omnibus
+        run: |
+          sudo mkdir -p /var/cache/omnibus
+          sudo mkdir -p /opt/metasploit-framework
+          sudo chown `whoami` /var/cache/omnibus
+          sudo chown `whoami` /opt/metasploit-framework
+
+          cd metasploit-omnibus
+          make
+
+      - name: Test artifact
+        run: |
+          echo "Testing artifact"
+
+          sudo rm -rf /opt/metasploit-framework
+          /usr/bin/find metasploit-omnibus/pkg
+          PACKAGE=$(pwd)/$(/usr/bin/find metasploit-omnibus/pkg/metasploit*.pkg | head -n 1)
+          sudo installer -pkg ${PACKAGE} -target /
+
+          /opt/metasploit-framework/bin/msfconsole -qx 'setg variable test; version; exit'
+          /opt/metasploit-framework/bin/msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
+          /opt/metasploit-framework/bin/msfd -h
+          /opt/metasploit-framework/bin/msfrpc -h
+          /opt/metasploit-framework/bin/msfrpcd -h
+          /opt/metasploit-framework/bin/msfdb -h
+          /opt/metasploit-framework/bin/msfbinscan -h
+          /opt/metasploit-framework/bin/msfrop -h
+          /opt/metasploit-framework/bin/msfelfscan -h
+          /opt/metasploit-framework/bin/msfmachscan -h
+          /opt/metasploit-framework/bin/msfpescan -h
+          # /opt/metasploit-framework/bin/msfupdate
+
+          # Test database connectivity
+          /opt/metasploit-framework/bin/msfdb init
+          /opt/metasploit-framework/bin/msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
+          grep -q "Connected" /tmp/db_status.txt
+
+          # Test TCP connection (exercises libpq SSL code path)
+          /opt/metasploit-framework/embedded/bin/ruby -ryaml -e '
+            cfg = YAML.load_file(File.expand_path("~/.msf4/database.yml"), aliases: true)
+            prod = cfg["production"]
+            prod["host"] = "127.0.0.1"
+            prod["port"] = prod.fetch("port", 5432)
+            prod.delete("socket")
+            File.write(File.expand_path("~/.msf4/database.yml"), YAML.dump(cfg))
+          '
+          /opt/metasploit-framework/bin/msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
+          grep -q "Connected" /tmp/db_status.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-macos-installers
+          path: |
+            metasploit-omnibus/pkg/*.pkg
+            metasploit-omnibus/pkg/*.rpm
+            metasploit-omnibus/pkg/*.msi
+            metasploit-omnibus/pkg/*.deb
+          retention-days: 7
+
+  updater_intel_tests:
+    name: updater regression tests on Intel
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3f9fa8c8c2bb1de7a8933f1b4e61a929c094226d
+      - name: Verify source commit
+        run: test "$(git rev-parse HEAD)" = '3f9fa8c8c2bb1de7a8933f1b4e61a929c094226d'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2.5'
+      - run: ruby test/msfupdate_macos_test.rb
+
