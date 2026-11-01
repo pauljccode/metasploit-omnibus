@@ -110,6 +110,8 @@ build do
       File.open(file_path, 'wb') { |f| f.puts(new_content) }
     end
   end
+  # Candidate migration correction, validated separately from upstream #21964.
+  patch source: 'msfdb-package-migrations.patch', plevel: 1, env: patch_env
   copy "#{project_dir}", "#{install_dir}/embedded/framework"
   block 'Verify PostgreSQL readiness correction' do
     require 'digest'
@@ -119,7 +121,7 @@ build do
       path = File.join(install_dir, 'embedded/framework', relative_path)
       raise "PostgreSQL recovery source changed: #{relative_path}" unless Digest::SHA256.file(path).hexdigest == expected
     end
-    puts "BUILT_POSTGRESQL_RECOVERY_VERIFIED framework=#{manifest.fetch('framework_commit')}"
+    puts "BUILT_POSTGRESQL_RECOVERY_VERIFIED framework=#{manifest.fetch('framework_commit')} migration_candidate=#{manifest.fetch('migration_candidate_commit')}"
   end
   major, minor, patch = Omnibus::BuildVersion.semver.split('.')
 
