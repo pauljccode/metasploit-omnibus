@@ -1,0 +1,57 @@
+name: Diagnose legacy x86 builder networking
+
+on:
+  push:
+    branches: [diagnose/legacy-x86-network-20261101]
+
+permissions:
+  contents: read
+
+jobs:
+  network:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Record host resolver and Docker
+        run: |
+          uname -a
+          docker version
+          cat /etc/resolv.conf
+          getent ahostsv4 rubygems.org
+
+      - name: Compare container resolver paths
+        run: |
+          image=rapid7/msf-ubuntu1204-x86-omnibus@sha256:03c493e53f40b05b413bdf6683e364103f70220b575accfd35207bbfff2d76ec
+          docker pull "$image"
+          cat > "$RUNNER_TEMP/network-probe.sh" <<'SH'
+          #!/bin/bash
+          set +e
+          uname -a
+          cat /etc/resolv.conf
+          cat /etc/nsswitch.conf
+          getent ahostsv4 rubygems.org
+          echo "GETENT_EXIT=$?"
+          ruby -v
+          ruby -rsocket -e 'p Addrinfo.getaddrinfo("rubygems.org", 443, :INET, :STREAM)'
+          echo "RUBY_DNS_EXIT=$?"
+          curl --connect-timeout 10 --max-time 20 --head https://rubygems.org/
+          echo "CURL_EXIT=$?"
+          SH
+          chmod +x "$RUNNER_TEMP/network-probe.sh"
+          for mode in bridge host unconfined; do
+            args=()
+            if [ "$mode" = host ]; then args+=(--network host); fi
+            if [ "$mode" = unconfined ]; then args+=(--security-opt seccomp=unconfined); fi
+            echo "PROBE_MODE=$mode"
+            if timeout 90 docker run --rm "${args[@]}" --user jenkins \
+              --volume "$RUNNER_TEMP/network-probe.sh:/tmp/network-probe.sh:ro" \
+              "$image" linux32 /bin/bash -l /tmp/network-probe.sh; then
+              echo "PROBE_COMPLETED=$mode"
+            else
+              echo "PROBE_PROCESS_EXIT=$? mode=$mode"
+            fi
+          done
