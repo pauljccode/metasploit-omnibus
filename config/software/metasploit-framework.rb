@@ -16,7 +16,7 @@ elsif has_windows_metasploit_framework_repo?
   source path: "../metasploit-framework"
 else
   source git: "https://github.com/pauljccode/metasploit-framework.git"
-  default_version "c05d6329c2c28119bc8cd6f185e8d8ac3697f220"
+  default_version "809e1587b522f042e04013a724e8827184696b01"
 end
 
 dependency "cacerts"
@@ -67,6 +67,8 @@ build do
       }
       # Remove problematic dependencies for Windows; Fiddle will need to be re-added in a future build for Ruby 3.3 support
       if windows?
+        # Bootsnap 1.26.1 preserves source bytes under Framework's binary encoding.
+        replacements["spec.add_runtime_dependency 'bootsnap'"] = "spec.add_runtime_dependency 'bootsnap', '>= 1.26.1'"
         skipped_dependencies += [
           'ffi (< 1.17.0)',
           'ffi (1.16.3)',
@@ -111,10 +113,13 @@ build do
   copy "#{project_dir}", "#{install_dir}/embedded/framework"
   block 'Verify PostgreSQL readiness correction' do
     require 'digest'
-    path = File.join(install_dir, 'embedded/framework/lib/msfdb_helpers/pg_ctl.rb')
-    expected = '6bf496a09dd8bbef8da1ea1e483640a03c6677e9f40d6b3e70d5c69c6eecf83a'
-    raise 'PostgreSQL readiness source changed' unless Digest::SHA256.file(path).hexdigest == expected
-    puts "BUILT_POSTGRESQL_READINESS_VERIFIED sha256=#{expected}"
+    require 'json'
+    manifest = JSON.parse(File.read(File.join(Omnibus::Config.project_root, 'ci/database-recovery-sources.json')))
+    manifest.fetch('files').each do |relative_path, expected|
+      path = File.join(install_dir, 'embedded/framework', relative_path)
+      raise "PostgreSQL recovery source changed: #{relative_path}" unless Digest::SHA256.file(path).hexdigest == expected
+    end
+    puts "BUILT_POSTGRESQL_RECOVERY_VERIFIED framework=#{manifest.fetch('framework_commit')}"
   end
   major, minor, patch = Omnibus::BuildVersion.semver.split('.')
 
@@ -166,18 +171,6 @@ build do
   bundle "install --jobs=4 --verbose", env: bundle_env
 
   if windows?
-    bootsnap_iseq = "#{install_dir}/embedded/lib/ruby/gems/#{ruby_abi_version}/gems/bootsnap-1.26.0/lib/bootsnap/compile_cache/iseq.rb"
-    block "Verify Bootsnap source before encoding correction" do
-      require 'digest'
-      expected = '3c7da075a42441d09809421a6fdcfac1f25408ac5e27bdc8b5187bd80174862e'
-      unless File.file?(bootsnap_iseq) && Digest::SHA256.file(bootsnap_iseq).hexdigest == expected
-        raise 'Bootsnap version or source changed; review the temporary source-encoding correction'
-      end
-    end
-    # Preserve Ruby source bytes when Framework sets default_internal to binary.
-    # Temporary correction for Bootsnap 1.26.0; see ci/WINDOWS-PACKAGE.md.
-    patch source: "bootsnap-1.26.0-source-encoding.patch", target: bootsnap_iseq, plevel: 1, env: bundle_env
-
     # Copy required runtime DLLs from MSYS2 ucrt64 to embedded/bin.
     # Native gems (nokogiri, eventmachine, etc.) link against MSYS2's ucrt64
     # libraries during bundle install. These DLLs must be available at runtime.

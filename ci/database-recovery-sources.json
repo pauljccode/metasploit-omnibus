@@ -1,0 +1,8 @@
+{
+  "framework_commit": "809e1587b522f042e04013a724e8827184696b01",
+  "files": {
+    "lib/msfdb_helpers/pg_ctl.rb": "d4d2dc29b020916ec01cd64585897348d69b1ab334a9437ad95c18df31d767a9",
+    "lib/msfdb_helpers/db_interface.rb": "f254fe87b4e09a0127afbb297f08b27662595e02ca98a8c598fe12c6579a17ae",
+    "msfdb": "a808c21b8d78ed8cc96814124d7ebf39cf4a361f207ff1e82fc050fe9804f5ea"
+  }
+}
