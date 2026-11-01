@@ -727,9 +727,11 @@ jobs:
         shell: pwsh
         run: |
           d:\metasploit-framework\bin\msfdb init
+          $initStatus = $LASTEXITCODE
           # Dump PG logs for debugging if init fails
           $logFile = Join-Path $env:USERPROFILE ".msf4\db\log"
           if (Test-Path $logFile) { echo "=== PostgreSQL log ==="; Get-Content $logFile; echo "===" }
+          if ($initStatus -ne 0) { Exit $initStatus }
           $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
           echo $output
           if ($output -notmatch "Connected") { Exit 1 }
