@@ -1,0 +1,54 @@
+name: Diagnose packaged database migration
+
+on:
+  push:
+    branches: [diagnose/package-migration-20261101]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Download the exact built package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'package.zip'
+          gh api repos/pauljccode/metasploit-omnibus/actions/artifacts/13069374055/zip > $archive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $expected = 'f501b003c94e7858d0671f5a66fc3de65ef2d0151ecb2a4df40a5c3011b148cb'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'Package archive digest mismatch'
+          }
+          Expand-Archive $archive -DestinationPath package
+
+      - name: Install the MSI
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem package -Recurse -Filter '*.msi')
+          if ($packages.Count -ne 1) { throw 'Expected one MSI' }
+          $install = Start-Process msiexec.exe -ArgumentList @('/i', $packages[0].FullName, '/qn', 'INSTALLLOCATION=D:\metasploit-framework') -Wait -PassThru
+          if ($install.ExitCode -ne 0) { exit $install.ExitCode }
+
+      - name: Capture initialization and migration output
+        shell: pwsh
+        run: |
+          & D:\metasploit-framework\bin\msfdb --debug init --component database --use-defaults
+          $initStatus = $LASTEXITCODE
+          Write-Output "MSFDB_INIT_EXIT=$initStatus"
+          exit $initStatus
+
+      - name: Stop the diagnostic database
+        if: always()
+        shell: pwsh
+        run: |
+          $database = Join-Path $env:USERPROFILE '.msf4\db'
+          if (Test-Path (Join-Path $database 'postmaster.pid')) {
+            & D:\metasploit-framework\embedded\bin\pg_ctl.exe -D $database -m fast -w stop
+            exit $LASTEXITCODE
+          }
