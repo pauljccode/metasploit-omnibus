@@ -95,10 +95,9 @@ jobs:
       - name: Checkout metasploit-framework code
         uses: actions/checkout@v4
         with:
-          repository: rapid7/metasploit-framework
+          repository: pauljccode/metasploit-framework
+          ref: 809e1587b522f042e04013a724e8827184696b01
           path: metasploit-framework
-          # If testing a custom branch is required
-          # ref: 'update-bundler-version'
 
       - name: Run omnibus
         run: |
@@ -141,7 +140,7 @@ jobs:
           retention-days: 7
 
   docker_intel:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.docker.runner || matrix.os }}
     timeout-minutes: 180
 
     strategy:
@@ -168,6 +167,8 @@ jobs:
           #  previousDockerhubImage: 'rapid7/msf-ubuntu1204-x64-omnibus:2024_04'
           #  installer: 'sudo dpkg -i metasploit-omnibus/pkg/*.deb'
           - name: 'ubuntu1204-x86'
+            # Docker 29.4.2 on Ubuntu 26 blocks this image's legacy socket calls.
+            runner: ubuntu-24.04
             previousDockerhubImage: 'rapid7/msf-ubuntu1204-x86-omnibus:2024_04'
             linux32: true
             installer: 'sudo dpkg -i metasploit-omnibus/pkg/metasploit-framework_*_i386.deb'
@@ -175,7 +176,7 @@ jobs:
             previousDockerhubImage: 'rapid7/msf-ubuntu1804-x64-omnibus:2024_04'
             installer: 'sudo dpkg -i metasploit-omnibus/pkg/metasploit-framework_*_amd64.deb'
 
-    name: ${{ matrix.os }} - ${{ matrix.docker.name }}
+    name: ${{ matrix.docker.runner || matrix.os }} - ${{ matrix.docker.name }}
     steps:
       - name: Checkout omnibus
         uses: actions/checkout@v4
@@ -245,6 +246,7 @@ jobs:
           #!/bin/bash -ex
           find metasploit-omnibus/pkg
           $INSTALL_ARTIFACT
+          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
 
           mkdir ~/.msf4; touch ~/.msf4/initial_setup_complete
 
@@ -317,6 +319,10 @@ jobs:
     timeout-minutes: 15
     name: ubuntu-latest db connectivity test
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: validation-source
+
       - uses: actions/download-artifact@v4
         with:
           name: metasploit-ubuntu1804-x64-installers
@@ -326,6 +332,7 @@ jobs:
         run: |
           set -ex
           sudo dpkg -i pkg/metasploit-framework_*_amd64.deb
+          /opt/metasploit-framework/embedded/bin/ruby validation-source/ci/verify-database-readiness-package.rb /opt/metasploit-framework
           msfdb init
           msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
           grep -q "Connected" /tmp/db_status.txt
@@ -365,10 +372,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - macos-14
-        ruby:
-          - 3.2.5
+        include:
+          - os: macos-14
+            arch: arm64
+            ruby: 3.2.5
+          - os: macos-15-intel
+            arch: x86_64
+            ruby: 3.2.5
 
     name: ${{ matrix.os }}
     steps:
@@ -388,6 +398,12 @@ jobs:
           cache-version: 4
           working-directory: metasploit-omnibus
 
+      - name: Test macOS updater
+        run: ruby metasploit-omnibus/test/msfupdate_macos_test.rb
+
+      - name: Test macOS package verifier
+        run: ruby metasploit-omnibus/test/verify_macos_package_test.rb
+
       - name: Run omnibus
         run: |
           sudo mkdir -p /var/cache/omnibus
@@ -406,6 +422,9 @@ jobs:
           /usr/bin/find metasploit-omnibus/pkg
           PACKAGE=$(pwd)/$(/usr/bin/find metasploit-omnibus/pkg/metasploit*.pkg | head -n 1)
           sudo installer -pkg ${PACKAGE} -target /
+          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
+
+          ruby metasploit-omnibus/scripts/verify_macos_package.rb --arch '${{ matrix.arch }}'
 
           /opt/metasploit-framework/bin/msfconsole -qx 'setg variable test; version; exit'
           /opt/metasploit-framework/bin/msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
@@ -440,7 +459,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: metasploit-osx-installers
+          name: metasploit-osx-${{ matrix.arch }}-installers
           path: |
             metasploit-omnibus/pkg/*.pkg
             metasploit-omnibus/pkg/*.rpm
@@ -516,11 +535,16 @@ jobs:
       #     bundle
       #     rake gem
 
+      - name: Preserve Framework source line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
       # Checkout framework
       - name: Checkout metasploit-framework code
         uses: actions/checkout@v4
         with:
-          repository: rapid7/metasploit-framework
+          repository: pauljccode/metasploit-framework
+          ref: 809e1587b522f042e04013a724e8827184696b01
           path: metasploit-framework
 
       - name: Test source cache helper
@@ -557,10 +581,16 @@ jobs:
           rem and the ridk.cmd Ruby installer will forcibly kill the msys2 process before attempting to install ruby
           ruby bin/omnibus build metasploit-framework
 
-      - name: Verify built Bootsnap correction
+      - name: Verify built PostgreSQL readiness correction
         shell: pwsh
         run: |
-          ruby metasploit-omnibus/ci/verify-bootsnap-package.rb C:/metasploit-framework
+          ruby metasploit-omnibus/ci/verify-database-readiness-package.rb C:/metasploit-framework
+          Exit $LASTEXITCODE
+
+      - name: Test built Bootsnap source encoding
+        shell: pwsh
+        run: |
+          C:/metasploit-framework/embedded/bin/ruby.exe metasploit-omnibus/ci/verify-windows-bootsnap.rb C:/metasploit-framework
           Exit $LASTEXITCODE
 
       - name: Verify production source cache receipt
@@ -636,10 +666,16 @@ jobs:
           echo "finished install"
           Exit $install_process.ExitCode
 
-      - name: Verify installed Bootsnap correction
+      - name: Verify installed PostgreSQL readiness correction
         shell: pwsh
         run: |
-          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-bootsnap-package.rb D:/metasploit-framework
+          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-database-readiness-package.rb D:/metasploit-framework
+          Exit $LASTEXITCODE
+
+      - name: Test installed Bootsnap source encoding
+        shell: pwsh
+        run: |
+          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-windows-bootsnap.rb D:/metasploit-framework
           Exit $LASTEXITCODE
 
       - shell: pwsh
@@ -691,9 +727,11 @@ jobs:
         shell: pwsh
         run: |
           d:\metasploit-framework\bin\msfdb init
+          $initStatus = $LASTEXITCODE
           # Dump PG logs for debugging if init fails
           $logFile = Join-Path $env:USERPROFILE ".msf4\db\log"
           if (Test-Path $logFile) { echo "=== PostgreSQL log ==="; Get-Content $logFile; echo "===" }
+          if ($initStatus -ne 0) { Exit $initStatus }
           $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
           echo $output
           if ($output -notmatch "Connected") { Exit 1 }

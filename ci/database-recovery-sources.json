@@ -1,0 +1,9 @@
+{
+  "framework_commit": "809e1587b522f042e04013a724e8827184696b01",
+  "migration_candidate_commit": "711d40bb2bc115bf6d68d2b85865083929615a6a",
+  "files": {
+    "lib/msfdb_helpers/pg_ctl.rb": "d4d2dc29b020916ec01cd64585897348d69b1ab334a9437ad95c18df31d767a9",
+    "lib/msfdb_helpers/db_interface.rb": "f254fe87b4e09a0127afbb297f08b27662595e02ca98a8c598fe12c6579a17ae",
+    "msfdb": "cc9374d8071c0ab7e64aea5396f91dc86f6c3fbc57c1ceebbe4d752ee0dde69b"
+  }
+}

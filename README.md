@@ -175,6 +175,82 @@ This preserves the gem lockfile and applies the libffi selection to the
 Omnibus bootstrap dependencies. Omnibus separately builds the libraries
 included in the resulting Metasploit package.
 
+## macOS updater checks
+
+The macOS updater preserves the architecture of an existing packaged Ruby.
+For a fresh installation, or a universal Ruby, it selects the native hardware
+architecture even when launched from a Rosetta shell. Before invoking Apple's
+installer it requires a successful download, a valid package signature, and
+Distribution metadata permitting that architecture.
+Architecture inspection uses macOS's built-in `file` command, so updating
+does not require Xcode command line tools or execution of the installed Ruby.
+
+Downloads use a private temporary directory, finite connection/transfer
+timeouts, HTTPS-only transfers and redirects, and cleanup on failure or
+interruption. The temporary directory is created under macOS's root-owned
+sticky `/private/tmp`, ignoring an inherited user-owned `TMPDIR`. A missing, partial, unsigned,
+or wrong-architecture package leaves the installation unchanged. Installer
+failures are reported to the caller, including when updating through `sudo`;
+changes already made by Apple's installer are not automatically rolled back.
+
+The release URL remains the existing macOS endpoint. If that endpoint only
+provides an Intel package, an arm64 installation receives a clear refusal
+instead of being overwritten. Publishing architecture-specific URLs or a
+universal release is a separate release-infrastructure change.
+
+Run the updater regression tests on macOS with Xcode command line tools
+(used to compile test fixtures) and Minitest installed:
+
+```sh
+ruby test/msfupdate_macos_test.rb
+```
+
+These exercise the production shell functions with controlled download,
+signature, architecture, and installer outcomes, using the real XML parser.
+They also interrupt a running download process group and verify cleanup. They
+compile arm64, Intel and universal executables and verify their detection with
+the real `file` command while developer tools are blocked from the updater's
+PATH. They do not install a package or establish acceptance of an officially
+signed release.
+
+## Verifying native macOS packages
+
+After installing a macOS package, verify its host architecture and linked
+libraries before running the usual console and database smoke tests:
+
+```sh
+ruby scripts/verify_macos_package.rb --arch arm64
+```
+
+Use `--arch x86_64` for an Intel package. The expected architecture is explicit
+so an accidentally translated build cannot redefine the test's expectation.
+The verifier checks Mach-O executables in `embedded/bin`, shared libraries and
+Ruby extensions in `embedded/lib`, and their transitive dependencies. It rejects
+missing libraries, architecture mismatches, and links outside the package other
+than macOS system libraries. Host images must have loadable Mach-O types and
+macOS platform metadata; an arm64 iOS library is rejected. It also starts the
+packaged Ruby with gems disabled
+and verifies its reported platform and CPU. Universal libraries are accepted
+when they contain the expected architecture.
+
+Metasploit's target payload directories are excluded from the initial host
+inventory. A host dependency that points into those directories is still
+checked. Debug symbols, static archives, and build object files are not runtime
+libraries. System libraries in the macOS dyld shared cache need not exist as
+individual files on disk.
+
+To inspect an extracted package, pass `--root` with its expanded `Payload`
+directory. Use `--static-only` to avoid executing packaged Ruby; that mode does
+not prove runtime compatibility. These checks do not establish package signing,
+notarization, or successful installation and upgrades on a clean machine.
+
+The regression tests build small, real arm64, Intel, and universal Mach-O
+fixtures. Run them on macOS with Xcode command line tools and Minitest installed:
+
+```sh
+ruby test/verify_macos_package_test.rb
+```
+
 ## Clean
 
 You can clean up all temporary files generated during the build process with
