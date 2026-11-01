@@ -1,6 +1,12 @@
 # frozen_string_literal: true
 
 require "tmpdir"
+require "rubygems"
+require "rbconfig"
+
+# Ignore the builder's gem environment when exercising the installed package.
+root = File.expand_path(ARGV.fetch(0))
+Gem.use_paths(File.join(root, "embedded/lib/ruby/gems", RbConfig::CONFIG.fetch("ruby_version")))
 require "bootsnap"
 require "bootsnap/compile_cache"
 

@@ -588,7 +588,7 @@ jobs:
       - name: Test built Bootsnap source encoding
         shell: pwsh
         run: |
-          C:/metasploit-framework/embedded/bin/ruby.exe metasploit-omnibus/ci/verify-windows-bootsnap.rb
+          C:/metasploit-framework/embedded/bin/ruby.exe metasploit-omnibus/ci/verify-windows-bootsnap.rb C:/metasploit-framework
           Exit $LASTEXITCODE
 
       - name: Verify production source cache receipt
@@ -673,7 +673,7 @@ jobs:
       - name: Test installed Bootsnap source encoding
         shell: pwsh
         run: |
-          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-windows-bootsnap.rb
+          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-windows-bootsnap.rb D:/metasploit-framework
           Exit $LASTEXITCODE
 
       - shell: pwsh
