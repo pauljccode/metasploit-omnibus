@@ -32,8 +32,9 @@ jobs:
         run: |
           $packages = @(Get-ChildItem package -Recurse -Filter '*.msi')
           if ($packages.Count -ne 1) { throw 'Expected one MSI' }
-          $install = Start-Process msiexec.exe -ArgumentList @('/i', $packages[0].FullName, '/qn', 'INSTALLLOCATION=D:\metasploit-framework') -Wait -PassThru
+          $install = Start-Process msiexec.exe -ArgumentList @('/i', $packages[0].FullName, '/qn', 'INSTALLLOCATION=D:\') -Wait -PassThru
           if ($install.ExitCode -ne 0) { exit $install.ExitCode }
+          if (!(Test-Path D:\metasploit-framework\bin\msfdb.bat)) { throw 'Installed wrapper missing' }
 
       - name: Capture initialization and migration output
         shell: pwsh
