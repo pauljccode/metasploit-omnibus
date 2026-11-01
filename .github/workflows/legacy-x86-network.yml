@@ -55,3 +55,16 @@ jobs:
               echo "PROBE_PROCESS_EXIT=$? mode=$mode"
             fi
           done
+
+      - name: Trace the default-filter resolver
+        run: |
+          command -v strace || { sudo apt-get update && sudo apt-get install -y strace; }
+          image=rapid7/msf-ubuntu1204-x86-omnibus@sha256:03c493e53f40b05b413bdf6683e364103f70220b575accfd35207bbfff2d76ec
+          container=$(docker run -d --user jenkins "$image" linux32 /bin/bash -c 'sleep 5; exec getent ahostsv4 rubygems.org')
+          trap 'docker rm -f "$container"' EXIT
+          pid=$(docker inspect --format '{{.State.Pid}}' "$container")
+          sudo timeout 30 strace -f -s 200 -o "$RUNNER_TEMP/resolver.trace" -p "$pid" || trace_status=$?
+          echo "TRACE_EXIT=${trace_status:-0}"
+          docker logs "$container"
+          docker wait "$container"
+          sudo cat "$RUNNER_TEMP/resolver.trace"
