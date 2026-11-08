@@ -1,7 +1,10 @@
 {
-  "VALIDATION.txt": "b7fc6b559adeb6d31b7646d4bbca0a3fe9d2b43d2482895128038669920c4843",
+  "VALIDATION.txt": "b2d4d4934d049c8910bb881d268ffb5530a1c79be645901decafbd96a1049fbc",
+  "archive-verification.json": "ad42da163e390686e69eead6d348fd10e854775c881941f807f465dae7d85c19",
   "centos6-repoforge.patch": "ba3ed7c5fb202c0a0fe82561ba991c4dba4c031461a43bd82fea48360bba6ee5",
+  "ci-results.json": "54953cdddc6ebdf99cfeb756ee858542d17991a6f06cc136f9f3735f825e9d46",
   "package-result-excerpts.txt": "a7feda3a518ba63fc1336624c8b0867713523e15bd716c0dd2eb9a1c1c65611b",
   "package-validation.patch": "41c5c16802dbe686b7b3ee805bffbd31671641a9f51f6fc7aed6e9cf1b7a33a0",
+  "standalone-result-excerpts.txt": "65ee8d78f7c13a0424f562375c392bd3c790cd20dacd05017c43f64efc9011d2",
   "standalone-validation.patch": "be0df50e434044a575ddd5520c6ee45dee1d5a9d14a214bb04187d50b5e7eacc"
 }

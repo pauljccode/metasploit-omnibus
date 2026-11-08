@@ -1,0 +1,259 @@
+{
+  "description": "Selected fields exported from the GitHub Actions API. Original dashboards require private-repository access. This is an author-provided export, not a public GitHub check or a signed attestation.",
+  "runs": [
+    {
+      "run_id": 42474705214,
+      "run_attempt": 1,
+      "workflow": "CentOS 6 standalone mirror validation",
+      "head_sha": "5e57f9ca664f80354ceccf3223a58b7005cf8db1",
+      "created_at": "2026-11-08T11:12:13Z",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 128713300467,
+          "name": "builder",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-08T11:12:16Z",
+          "completed_at": "2026-11-08T11:17:37Z",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "steps": [
+            {
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 1,
+              "started_at": "2026-11-08T11:12:16Z",
+              "completed_at": "2026-11-08T11:12:17Z"
+            },
+            {
+              "name": "Run actions/checkout@v4",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 2,
+              "started_at": "2026-11-08T11:12:17Z",
+              "completed_at": "2026-11-08T11:12:18Z"
+            },
+            {
+              "name": "Build the CentOS 6 image",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 3,
+              "started_at": "2026-11-08T11:12:18Z",
+              "completed_at": "2026-11-08T11:17:31Z"
+            },
+            {
+              "name": "Check the builder toolchain",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 4,
+              "started_at": "2026-11-08T11:17:31Z",
+              "completed_at": "2026-11-08T11:17:35Z"
+            },
+            {
+              "name": "Preserve builder diagnostics",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 5,
+              "started_at": "2026-11-08T11:17:35Z",
+              "completed_at": "2026-11-08T11:17:36Z"
+            },
+            {
+              "name": "Post Run actions/checkout@v4",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 10,
+              "started_at": "2026-11-08T11:17:36Z",
+              "completed_at": "2026-11-08T11:17:36Z"
+            },
+            {
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 11,
+              "started_at": "2026-11-08T11:17:36Z",
+              "completed_at": "2026-11-08T11:17:36Z"
+            }
+          ]
+        }
+      ],
+      "validation_patch": "standalone-validation.patch",
+      "validation_patch_sha256": "be0df50e434044a575ddd5520c6ee45dee1d5a9d14a214bb04187d50b5e7eacc",
+      "retained_original_job_log_sha256": "c28fab25975557dff2f6cedc50e822eb97af4b4177b3281a2b4ed43842b25251"
+    },
+    {
+      "run_id": 42474677974,
+      "run_attempt": 1,
+      "workflow": "CentOS 6 repaired builder package validation",
+      "head_sha": "f79ecf5938ac23a69d948cfabe7d9c59359f79ae",
+      "created_at": "2026-11-08T11:11:51Z",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 128713216781,
+          "name": "ubuntu-latest - centos6-x64",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-08T11:11:55Z",
+          "completed_at": "2026-11-08T11:47:25Z",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "steps": [
+            {
+              "name": "Set up job",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 1,
+              "started_at": "2026-11-08T11:11:56Z",
+              "completed_at": "2026-11-08T11:11:57Z"
+            },
+            {
+              "name": "Record initial runner capacity",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 2,
+              "started_at": "2026-11-08T11:11:57Z",
+              "completed_at": "2026-11-08T11:11:59Z"
+            },
+            {
+              "name": "Checkout omnibus",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 3,
+              "started_at": "2026-11-08T11:11:59Z",
+              "completed_at": "2026-11-08T11:12:02Z"
+            },
+            {
+              "name": "Run dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 4,
+              "started_at": "2026-11-08T11:12:02Z",
+              "completed_at": "2026-11-08T11:12:03Z"
+            },
+            {
+              "name": "Require fresh builder validation",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 5,
+              "started_at": "2026-11-08T11:12:03Z",
+              "completed_at": "2026-11-08T11:12:03Z"
+            },
+            {
+              "name": "Set docker build metadata",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 6,
+              "started_at": "2026-11-08T11:12:03Z",
+              "completed_at": "2026-11-08T11:12:03Z"
+            },
+            {
+              "name": "Build Docker image",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 7,
+              "started_at": "2026-11-08T11:12:03Z",
+              "completed_at": "2026-11-08T11:18:12Z"
+            },
+            {
+              "name": "Checkout omnibus and submodules",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 8,
+              "started_at": "2026-11-08T11:18:12Z",
+              "completed_at": "2026-11-08T11:19:06Z"
+            },
+            {
+              "name": "Stage the verified upgrade archives for this private trial",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 9,
+              "started_at": "2026-11-08T11:19:06Z",
+              "completed_at": "2026-11-08T11:19:09Z"
+            },
+            {
+              "name": "Make room for the CentOS 6 package build",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 10,
+              "started_at": "2026-11-08T11:19:09Z",
+              "completed_at": "2026-11-08T11:20:25Z"
+            },
+            {
+              "name": "Run omnibus",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 11,
+              "started_at": "2026-11-08T11:20:25Z",
+              "completed_at": "2026-11-08T11:46:01Z"
+            },
+            {
+              "name": "Test artifact",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 12,
+              "started_at": "2026-11-08T11:46:01Z",
+              "completed_at": "2026-11-08T11:47:06Z"
+            },
+            {
+              "name": "Record final runner capacity",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 13,
+              "started_at": "2026-11-08T11:47:06Z",
+              "completed_at": "2026-11-08T11:47:06Z"
+            },
+            {
+              "name": "Preserve build diagnostics",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 14,
+              "started_at": "2026-11-08T11:47:06Z",
+              "completed_at": "2026-11-08T11:47:07Z"
+            },
+            {
+              "name": "Upload artifact",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 15,
+              "started_at": "2026-11-08T11:47:07Z",
+              "completed_at": "2026-11-08T11:47:22Z"
+            },
+            {
+              "name": "Post Checkout omnibus and submodules",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 29,
+              "started_at": "2026-11-08T11:47:22Z",
+              "completed_at": "2026-11-08T11:47:23Z"
+            },
+            {
+              "name": "Post Checkout omnibus",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 30,
+              "started_at": "2026-11-08T11:47:23Z",
+              "completed_at": "2026-11-08T11:47:23Z"
+            },
+            {
+              "name": "Complete job",
+              "status": "completed",
+              "conclusion": "success",
+              "number": 31,
+              "started_at": "2026-11-08T11:47:23Z",
+              "completed_at": "2026-11-08T11:47:23Z"
+            }
+          ]
+        }
+      ],
+      "validation_patch": "package-validation.patch",
+      "validation_patch_sha256": "41c5c16802dbe686b7b3ee805bffbd31671641a9f51f6fc7aed6e9cf1b7a33a0",
+      "retained_original_job_log_sha256": "9b6b2daa19ac307682214d055a430983af6979a3ad80d584618cb7785ada382f"
+    }
+  ]
+}

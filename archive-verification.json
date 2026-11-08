@@ -1,0 +1,31 @@
+{
+  "description": "Archives compared byte for byte with fresh upstream HTTPS downloads on November 8, 2026. Hashes are independently verifiable from the linked upstream archives and source-cache PRs.",
+  "archives": [
+    {
+      "name": "zlib",
+      "version": "1.4",
+      "branch": "build/cache-zlib-1.4",
+      "filename": "zlib-1.4.tar.gz",
+      "url": "https://zlib.net/fossils/zlib-1.4.tar.gz",
+      "sha256": "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584",
+      "head": "aed85c93f2a71a3b2edea82ff8dfe9cead834e27",
+      "bytes": 1507140,
+      "archive_entries": 302,
+      "matches_upstream": true,
+      "only_change": "A\tzlib-1.4.tar.gz"
+    },
+    {
+      "name": "libffi",
+      "version": "3.8.0",
+      "branch": "build/cache-libffi-3.8.0",
+      "filename": "libffi-3.8.0.tar.gz",
+      "url": "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz",
+      "sha256": "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4",
+      "head": "cfc7e205b1430956f0b8181104e45cc53ad8a9d4",
+      "bytes": 1581626,
+      "archive_entries": 534,
+      "matches_upstream": true,
+      "only_change": "A\tlibffi-3.8.0.tar.gz"
+    }
+  ]
+}

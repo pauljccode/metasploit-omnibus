@@ -1,5 +1,18 @@
 CentOS 6 RepoForge repair validation — November 8, 2026
 
+Evidence index
+
+- ci-results.json: exported run IDs, exact heads, job/step outcomes and log hashes.
+- standalone-result-excerpts.txt: bootstrap checksums and verified toolchain output.
+- package-result-excerpts.txt: package-health, library and database test output.
+- archive-verification.json: fresh upstream archive comparisons and checksums.
+- SHA256.json: checksums for every file in this evidence bundle.
+
+The result export is provided by the author from the GitHub Actions API; the
+original CI dashboards remain private. It is not a public GitHub check or a
+signed attestation. Source patches and reproduction commands below allow
+independent testing without organization access.
+
 Source-only candidate: 1f309d7; base: 494135f0cd93c71145b9ad1f173b8d696c67b0ba.
 centos6-repoforge.patch is the proposed upstream change. The other patches
 include the separate validation configuration and are supporting evidence only.
