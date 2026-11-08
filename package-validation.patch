@@ -1,0 +1,3710 @@
+diff --git a/.github/workflows/armv7-dependency-packages.yml b/.github/workflows/armv7-dependency-packages.yml
+new file mode 100644
+index 0000000..2983f03
+--- /dev/null
++++ b/.github/workflows/armv7-dependency-packages.yml
+@@ -0,0 +1,165 @@
++name: ARMv7 dependency package validation
++
++on:
++  push:
++    branches:
++      - test/armv7-package-export
++
++permissions:
++  contents: read
++
++jobs:
++  docker_arm:
++    runs-on: ${{ matrix.os }}
++    timeout-minutes: 360
++
++    strategy:
++      fail-fast: false
++      matrix:
++        os:
++          - ubuntu-latest
++        # From: 'ls ./docker/'
++        docker:
++          # Skipped as not working
++          # - { dockerfile: 'debian-aarch64', previousImage: '' }
++          - { name: 'debian-armv7', previousDockerhubImage: 'rapid7/msf-debian-armv7-omnibus:2024_04' }
++
++    name: ${{ matrix.os }} - ${{ matrix.docker.name }}
++    steps:
++      - name: Record initial runner capacity
++        run: |
++          df -h
++          df -i
++          docker system df
++
++      - name: Checkout omnibus
++        uses: actions/checkout@v4
++        with:
++          path: metasploit-omnibus
++
++      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
++        id: changes
++        with:
++          # Compare the proposal to its upstream base, not an empty private branch.
++          base: 494135f0cd93c71145b9ad1f173b8d696c67b0ba
++          filters: |
++            docker:
++              - 'docker/**'
++          working-directory: metasploit-omnibus
++
++      # Set the env vars for either a new build, or a previously successful build
++      - name: Set docker build metadata
++        run: |
++          BUILD_DATE=$(date "+%Y_%m")
++          export BUILD_DATE
++          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
++          if test "${HAS_MODIFIED_DOCKERFILES}" = 'true'; then
++            echo 'New build required'
++            echo "DOCKER_IMAGE=rapid7/${DOCKER_NAME}-omnibus:${BUILD_DATE}" >> "$GITHUB_ENV"
++          else
++            echo 'Reusing old image'
++            echo "DOCKER_IMAGE=${PREVIOUS_DOCKERHUB_IMAGE}" >> "$GITHUB_ENV"
++          fi
++        env:
++          HAS_MODIFIED_DOCKERFILES: ${{ steps.changes.outputs.docker }}
++          DOCKER_NAME: ${{ matrix.docker.name }}
++          PREVIOUS_DOCKERHUB_IMAGE: ${{ matrix.docker.previousDockerhubImage }}
++
++      - name: Build Docker image
++        if: steps.changes.outputs.docker == 'true'
++        run: |
++          /bin/bash -x -c "cd metasploit-omnibus && docker build --tag ${DOCKER_IMAGE} -f ./docker/${DOCKER_NAME}/Dockerfile ./docker/${DOCKER_NAME}"
++        env:
++          DOCKER_NAME: ${{ matrix.docker.name }}
++
++      # Checkout again - but with the submodules enabled to start a real build
++      - name: Checkout omnibus and submodules
++        uses: actions/checkout@v4
++        with:
++          submodules: true
++          path: metasploit-omnibus
++
++      # Checkout framework
++      - name: Checkout metasploit-framework code
++        uses: actions/checkout@v4
++        with:
++          repository: rapid7/metasploit-framework
++          ref: 15fd116f30d5f652e9153f18d0965aa2d5ec3841
++          path: metasploit-framework
++
++      - name: Stage the verified upgrade archives for this private trial
++        run: |
++          curl --fail --location --output metasploit-omnibus/local/cache/zlib-1.4.tar.gz https://zlib.net/fossils/zlib-1.4.tar.gz
++          echo "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584  metasploit-omnibus/local/cache/zlib-1.4.tar.gz" | shasum -a 256 -c -
++          curl --fail --location --output metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz
++          echo "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4  metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz" | shasum -a 256 -c -
++
++      - name: Make room for the ARMv7 package build
++        run: |
++          test "$RUNNER_ENVIRONMENT" = github-hosted
++          df -h
++          df -i
++          docker system df
++          # Packaging does not use the hosted Android SDK.
++          if test -d /usr/local/lib/android/sdk; then
++            sudo du -sh /usr/local/lib/android/sdk
++            sudo rm -rf -- /usr/local/lib/android/sdk
++          fi
++          df -h
++          df -i
++
++      - name: Run omnibus
++        timeout-minutes: 340
++        run: |
++          set -euxo pipefail
++          echo "Building new image from ${DOCKER_IMAGE}"
++          mkdir -p metasploit-omnibus/certs
++          curl -L -o metasploit-omnibus/certs/ca-certificates.crt https://curl.haxx.se/ca/cacert.pem
++          cat > Dockerfile_temp <<EOF
++          FROM ${DOCKER_IMAGE} AS build
++          RUN ["cross-build-start"]
++          COPY metasploit-omnibus /metasploit-omnibus
++          COPY metasploit-framework /metasploit-framework
++          RUN bash -l -c "cd /metasploit-omnibus && make && /opt/metasploit-framework/embedded/bin/ruby ci/verify-upgraded-dependency.rb /opt/metasploit-framework"
++          RUN ["cross-build-end"]
++          FROM scratch AS packages
++          COPY --from=build /metasploit-omnibus/pkg/ /
++          EOF
++          cat > Dockerfile_temp.dockerignore <<EOF
++          *
++          !metasploit-omnibus
++          !metasploit-framework
++          EOF
++
++          # Export the installers without loading the complete build image.
++          docker build --no-cache --progress=plain --target packages \
++            --output type=local,dest=metasploit-omnibus/pkg \
++            --file Dockerfile_temp . 2>&1 | tee armv7-build.log
++
++      - name: Record final runner capacity
++        if: always()
++        run: |
++          df -h
++          df -i
++          docker system df
++
++      - name: Preserve build diagnostics
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: armv7-build-diagnostics
++          path: armv7-build.log
++          if-no-files-found: warn
++          retention-days: 7
++
++      - name: Upload artifact
++        uses: actions/upload-artifact@v4
++        with:
++          name: metasploit-${{ matrix.docker.name }}-installers
++          path: |
++            metasploit-omnibus/pkg/*.pkg
++            metasploit-omnibus/pkg/*.rpm
++            metasploit-omnibus/pkg/*.msi
++            metasploit-omnibus/pkg/*.deb
++          if-no-files-found: error
++          retention-days: 7
+diff --git a/.github/workflows/centos6-repaired-package.yml b/.github/workflows/centos6-repaired-package.yml
+new file mode 100644
+index 0000000..9d8e28e
+--- /dev/null
++++ b/.github/workflows/centos6-repaired-package.yml
+@@ -0,0 +1,221 @@
++name: CentOS 6 repaired builder package validation
++
++on:
++  push:
++    branches:
++      - test/centos6-repaired-package
++
++permissions:
++  contents: read
++
++jobs:
++  docker_intel:
++    runs-on: ${{ matrix.docker.runner || matrix.os }}
++    timeout-minutes: 180
++
++    strategy:
++      fail-fast: false
++      matrix:
++        os:
++          - ubuntu-latest
++        # From: 'ls ./docker/'
++        docker:
++          - name: 'centos6-x64'
++            runner: ubuntu-latest
++            linux32: ''
++            previousDockerhubImage: 'rapid7/msf-centos6-x64-omnibus:2024_04'
++            installer: 'sudo rpm -i metasploit-omnibus/pkg/metasploit-framework*.rpm'
++
++    name: ${{ matrix.docker.runner || matrix.os }} - ${{ matrix.docker.name }}
++    steps:
++      - name: Record initial runner capacity
++        run: |
++          df -h
++          df -i
++          docker system df
++
++      - name: Checkout omnibus
++        uses: actions/checkout@v4
++        with:
++          path: metasploit-omnibus
++
++      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
++        id: changes
++        with:
++          # Compare with the actual upstream base of these dependency changes.
++          base: 494135f0cd93c71145b9ad1f173b8d696c67b0ba
++          filters: |
++            docker:
++              - 'docker/**'
++          working-directory: metasploit-omnibus
++
++      - name: Require fresh builder validation
++        env:
++          HAS_MODIFIED_DOCKERFILES: ${{ steps.changes.outputs.docker }}
++        run: test "$HAS_MODIFIED_DOCKERFILES" = true
++
++      # Set the env vars for either a new build, or a previously successful build
++      - name: Set docker build metadata
++        run: |
++          BUILD_DATE=$(date "+%Y_%m")
++          export BUILD_DATE
++          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
++          if test "${HAS_MODIFIED_DOCKERFILES}" = 'true'; then
++            echo 'New build required'
++            echo "DOCKER_IMAGE=rapid7/${DOCKER_NAME}-omnibus:${BUILD_DATE}" >> "$GITHUB_ENV"
++          else
++            echo 'Reusing old image'
++            echo "DOCKER_IMAGE=${PREVIOUS_DOCKERHUB_IMAGE}" >> "$GITHUB_ENV"
++          fi
++        env:
++          HAS_MODIFIED_DOCKERFILES: ${{ steps.changes.outputs.docker }}
++          DOCKER_NAME: ${{ matrix.docker.name }}
++          PREVIOUS_DOCKERHUB_IMAGE: ${{ matrix.docker.previousDockerhubImage }}
++
++      - name: Build Docker image
++        if: steps.changes.outputs.docker == 'true'
++        run: |
++          set -euxo pipefail
++          cd metasploit-omnibus
++          docker build --progress=plain --tag "$DOCKER_IMAGE" \
++            -f "./docker/$IMAGE_NAME/Dockerfile" "./docker/$IMAGE_NAME" 2>&1 | tee ../centos6-builder.log
++          docker image inspect "$DOCKER_IMAGE" --format '{{.Id}}'
++        env:
++          IMAGE_NAME: ${{ matrix.docker.name }}
++
++      # Checkout again - but with the submodules enabled to start a real build
++      - name: Checkout omnibus and submodules
++        uses: actions/checkout@v4
++        with:
++          submodules: true
++          path: metasploit-omnibus
++
++      - name: Stage the verified upgrade archives for this private trial
++        run: |
++          curl --fail --location --output metasploit-omnibus/local/cache/zlib-1.4.tar.gz https://zlib.net/fossils/zlib-1.4.tar.gz
++          echo "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584  metasploit-omnibus/local/cache/zlib-1.4.tar.gz" | shasum -a 256 -c -
++          curl --fail --location --output metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz
++          echo "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4  metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz" | shasum -a 256 -c -
++
++      - name: Make room for the CentOS 6 package build
++        run: |
++          test "$RUNNER_ENVIRONMENT" = github-hosted
++          df -h
++          df -i
++          docker system df
++          # This native CentOS 6 build does not use the hosted Android SDK.
++          if test -d /usr/local/lib/android/sdk; then
++            sudo du -sh /usr/local/lib/android/sdk
++            sudo rm -rf -- /usr/local/lib/android/sdk
++          fi
++          df -h
++          df -i
++
++      - name: Run omnibus
++        run: |
++          set -euxo pipefail
++          mkdir -p metasploit-omnibus/certs
++          curl -L -o metasploit-omnibus/certs/ca-certificates.crt https://curl.haxx.se/ca/cacert.pem
++
++          # If required, change reported architecture in new program environment and set personality flags
++          if [ ! -z "${LINUX32}" ] ; then
++            echo 'setting linux32'
++            /bin/bash -x -c "docker run --rm --volume $(pwd):$(pwd) --workdir $(pwd) --user jenkins ${DOCKER_IMAGE} linux32 /bin/bash -l -c 'cd metasploit-omnibus && ARCH=x86_64 make'" 2>&1 | tee centos6-build.log
++          else
++            /bin/bash -x -c "docker run --rm --volume $(pwd):$(pwd) --workdir $(pwd) --user jenkins ${DOCKER_IMAGE} /bin/bash -l -c 'cd metasploit-omnibus && make'" 2>&1 | tee centos6-build.log
++          fi
++        env:
++          LINUX32: ${{ matrix.docker.linux32 }}
++
++      - name: Test artifact
++        run: |
++          echo "Testing artifact"
++
++          cat > test_script.sh <<EOF
++          #!/bin/bash -ex
++          find metasploit-omnibus/pkg
++          $INSTALL_ARTIFACT
++          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
++          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-upgraded-dependency.rb /opt/metasploit-framework
++
++          mkdir ~/.msf4; touch ~/.msf4/initial_setup_complete
++
++          msfconsole -qx 'setg variable test; version; exit'
++          msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
++          msfd -h
++          msfrpc -h
++          msfrpcd -h
++          msfdb -h
++          msfbinscan -h
++          msfrop -h
++          msfelfscan -h
++          msfmachscan -h
++          msfpescan -h
++          # msfupdate
++
++          # Test database connectivity (catches libpq/OpenSSL ABI mismatches)
++          msfdb init
++          msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
++          grep -q "Connected" /tmp/db_status.txt
++
++          # Test TCP connection
++          ruby -ryaml -e '
++            path = File.expand_path("~/.msf4/database.yml")
++            cfg = if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("3.1")
++              YAML.load_file(path, aliases: true)
++            else
++              YAML.load_file(path)
++            end
++            prod = cfg["production"]
++            prod["host"] = "127.0.0.1"
++            prod["port"] = prod.fetch("port", 5432)
++            prod.delete("socket")
++            File.write(path, YAML.dump(cfg))
++          '
++          msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
++          grep -q "Connected" /tmp/db_status.txt
++          EOF
++
++          chmod +x ./test_script.sh
++
++          # If required, change reported architecture in new program environment and set personality flags
++          if [ ! -z "${LINUX32}" ] ; then
++            echo 'setting linux32'
++            /bin/bash -x -c "docker run --rm --volume $(pwd):$(pwd) --workdir $(pwd) --user jenkins ${DOCKER_IMAGE} linux32 /bin/bash -l -c './test_script.sh'"
++          else
++            /bin/bash -x -c "docker run --rm --volume $(pwd):$(pwd) --workdir $(pwd) --user jenkins ${DOCKER_IMAGE} /bin/bash -l -c './test_script.sh'"
++          fi
++        env:
++          LINUX32: ${{ matrix.docker.linux32 }}
++          INSTALL_ARTIFACT: ${{ matrix.docker.installer }}
++
++      - name: Record final runner capacity
++        if: always()
++        run: |
++          df -h
++          df -i
++          docker system df
++
++      - name: Preserve build diagnostics
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: centos6-build-diagnostics
++          path: |
++            centos6-builder.log
++            centos6-build.log
++          if-no-files-found: warn
++          retention-days: 7
++
++      - name: Upload artifact
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: metasploit-${{ matrix.docker.name }}-installers
++          path: |
++            metasploit-omnibus/pkg/*.pkg
++            metasploit-omnibus/pkg/*.rpm
++            metasploit-omnibus/pkg/*.msi
++            metasploit-omnibus/pkg/*.deb
++          if-no-files-found: error
++          retention-days: 7
+diff --git a/.github/workflows/macos-runner-validation.yml b/.github/workflows/macos-runner-validation.yml
+new file mode 100644
+index 0000000..97b3a9e
+--- /dev/null
++++ b/.github/workflows/macos-runner-validation.yml
+@@ -0,0 +1,441 @@
++name: Combined dependency package trial
++
++on:
++  push:
++    branches:
++      - test/dependency-upgrades-integrated
++
++permissions:
++  contents: read
++
++jobs:
++  osx:
++    runs-on: ${{ matrix.os }}
++    timeout-minutes: 180
++
++    strategy:
++      fail-fast: false
++      matrix:
++        include:
++          - os: macos-15-intel
++            arch: x86_64
++            ruby: 3.2.5
++
++    name: ${{ matrix.os }}
++    env:
++      MACOSX_DEPLOYMENT_TARGET: "14.0"
++    steps:
++      - name: Checkout omnibus
++        uses: actions/checkout@v4
++        with:
++          submodules: true
++          path: metasploit-omnibus
++
++      - name: Setup Ruby
++        env:
++          BUNDLE_FORCE_RUBY_PLATFORM: true
++        uses: ruby/setup-ruby@v1
++        with:
++          ruby-version: ${{ matrix.ruby }}
++          bundler-cache: true
++          cache-version: 4
++          working-directory: metasploit-omnibus
++
++      - name: Test macOS updater
++        run: ruby metasploit-omnibus/test/msfupdate_macos_test.rb
++
++      - name: Test macOS package verifier
++        run: ruby metasploit-omnibus/test/verify_macos_package_test.rb
++
++      - name: Stage the verified upgrade archives for this private trial
++        run: |
++          curl --fail --location --output metasploit-omnibus/local/cache/zlib-1.4.tar.gz https://zlib.net/fossils/zlib-1.4.tar.gz
++          echo "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584  metasploit-omnibus/local/cache/zlib-1.4.tar.gz" | shasum -a 256 -c -
++          curl --fail --location --output metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz
++          echo "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4  metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz" | shasum -a 256 -c -
++
++      - name: Run omnibus
++        run: |
++          sudo mkdir -p /var/cache/omnibus
++          sudo mkdir -p /opt/metasploit-framework
++          sudo chown "$(whoami)" /var/cache/omnibus
++          sudo chown "$(whoami)" /opt/metasploit-framework
++
++          cd metasploit-omnibus
++          make
++
++      - name: Test artifact
++        run: |
++          echo "Testing artifact"
++
++          sudo rm -rf /opt/metasploit-framework
++          /usr/bin/find metasploit-omnibus/pkg
++          PACKAGE=$(pwd)/$(/usr/bin/find metasploit-omnibus/pkg/metasploit*.pkg | head -n 1)
++          sudo installer -pkg "${PACKAGE}" -target /
++          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
++          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-upgraded-dependency.rb /opt/metasploit-framework
++
++          ruby metasploit-omnibus/ci/verify-macos-deployment-target.rb /opt/metasploit-framework '${{ matrix.arch }}' 14.0
++
++          /opt/metasploit-framework/bin/msfconsole -qx 'setg variable test; version; exit'
++          /opt/metasploit-framework/bin/msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
++          /opt/metasploit-framework/bin/msfd -h
++          /opt/metasploit-framework/bin/msfrpc -h
++          /opt/metasploit-framework/bin/msfrpcd -h
++          /opt/metasploit-framework/bin/msfdb -h
++          /opt/metasploit-framework/bin/msfbinscan -h
++          /opt/metasploit-framework/bin/msfrop -h
++          /opt/metasploit-framework/bin/msfelfscan -h
++          /opt/metasploit-framework/bin/msfmachscan -h
++          /opt/metasploit-framework/bin/msfpescan -h
++          # /opt/metasploit-framework/bin/msfupdate
++
++          # Test database connectivity
++          /opt/metasploit-framework/bin/msfdb init
++          /opt/metasploit-framework/bin/msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
++          grep -q "Connected" /tmp/db_status.txt
++
++          # Test TCP connection (exercises libpq SSL code path)
++          /opt/metasploit-framework/embedded/bin/ruby -ryaml -e '
++            cfg = YAML.load_file(File.expand_path("~/.msf4/database.yml"), aliases: true)
++            prod = cfg["production"]
++            prod["host"] = "127.0.0.1"
++            prod["port"] = prod.fetch("port", 5432)
++            prod.delete("socket")
++            File.write(File.expand_path("~/.msf4/database.yml"), YAML.dump(cfg))
++          '
++          /opt/metasploit-framework/bin/msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
++          grep -q "Connected" /tmp/db_status.txt
++
++      - name: Upload artifact
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: metasploit-osx-${{ matrix.arch }}-installers
++          path: |
++            metasploit-omnibus/pkg/*.pkg
++            metasploit-omnibus/pkg/*.rpm
++            metasploit-omnibus/pkg/*.msi
++            metasploit-omnibus/pkg/*.deb
++          if-no-files-found: error
++          retention-days: 7
++
++
++  docker_intel:
++    runs-on: ${{ matrix.docker.runner || matrix.os }}
++    timeout-minutes: 180
++
++    strategy:
++      fail-fast: false
++      matrix:
++        os:
++          - ubuntu-latest
++        # From: 'ls ./docker/'
++        docker:
++          - name: 'fedora30-x64'
++            previousDockerhubImage: 'rapid7/msf-fedora30-x64-omnibus:2024_04'
++            installer: 'sudo rpm -i metasploit-omnibus/pkg/metasploit-framework*.rpm'
++          - name: 'ubuntu1804-x64'
++            previousDockerhubImage: 'rapid7/msf-ubuntu1804-x64-omnibus:2024_04'
++            installer: 'sudo dpkg -i metasploit-omnibus/pkg/metasploit-framework_*_amd64.deb'
++          - name: 'ubuntu1204-x86'
++            runner: ubuntu-24.04
++            previousDockerhubImage: 'rapid7/msf-ubuntu1204-x86-omnibus:2024_04'
++            linux32: true
++            installer: 'sudo dpkg -i metasploit-omnibus/pkg/metasploit-framework_*_i386.deb'
++
++    name: ${{ matrix.docker.runner || matrix.os }} - ${{ matrix.docker.name }}
++    steps:
++      - name: Checkout omnibus
++        uses: actions/checkout@v4
++        with:
++          path: metasploit-omnibus
++
++      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
++        id: changes
++        with:
++          filters: |
++            docker:
++              - 'docker/**'
++          working-directory: metasploit-omnibus
++
++      # Set the env vars for either a new build, or a previously successful build
++      - name: Set docker build metadata
++        run: |
++          BUILD_DATE=$(date "+%Y_%m")
++          export BUILD_DATE
++          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
++          if test "${HAS_MODIFIED_DOCKERFILES}" = 'true'; then
++            echo 'New build required'
++            echo "DOCKER_IMAGE=rapid7/${DOCKER_NAME}-omnibus:${BUILD_DATE}" >> "$GITHUB_ENV"
++          else
++            echo 'Reusing old image'
++            echo "DOCKER_IMAGE=${PREVIOUS_DOCKERHUB_IMAGE}" >> "$GITHUB_ENV"
++          fi
++        env:
++          HAS_MODIFIED_DOCKERFILES: ${{ steps.changes.outputs.docker }}
++          DOCKER_NAME: ${{ matrix.docker.name }}
++          PREVIOUS_DOCKERHUB_IMAGE: ${{ matrix.docker.previousDockerhubImage }}
++
++      - name: Build Docker image
++        if: steps.changes.outputs.docker == 'true'
++        run: |
++          /bin/bash -x -c "cd metasploit-omnibus && docker build --tag ${DOCKER_IMAGE} -f ./docker/${IMAGE_NAME}/Dockerfile ./docker/${IMAGE_NAME}"
++        env:
++          IMAGE_NAME: ${{ matrix.docker.name }}
++
++      # Checkout again - but with the submodules enabled to start a real build
++      - name: Checkout omnibus and submodules
++        uses: actions/checkout@v4
++        with:
++          submodules: true
++          path: metasploit-omnibus
++
++      - name: Stage the verified upgrade archives for this private trial
++        run: |
++          curl --fail --location --output metasploit-omnibus/local/cache/zlib-1.4.tar.gz https://zlib.net/fossils/zlib-1.4.tar.gz
++          echo "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584  metasploit-omnibus/local/cache/zlib-1.4.tar.gz" | shasum -a 256 -c -
++          curl --fail --location --output metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz
++          echo "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4  metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz" | shasum -a 256 -c -
++
++      - name: Run omnibus
++        run: |
++          set -x
++          mkdir -p metasploit-omnibus/certs
++          curl -L -o metasploit-omnibus/certs/ca-certificates.crt https://curl.haxx.se/ca/cacert.pem
++
++          # If required, change reported architecture in new program environment and set personality flags
++          if [ ! -z "${LINUX32}" ] ; then
++            echo 'setting linux32'
++            /bin/bash -x -c "docker run --rm --volume $(pwd):$(pwd) --workdir $(pwd) --user jenkins ${DOCKER_IMAGE} linux32 /bin/bash -l -c 'cd metasploit-omnibus && ARCH=x86_64 make'"
++          else
++            /bin/bash -x -c "docker run --rm --volume $(pwd):$(pwd) --workdir $(pwd) --user jenkins ${DOCKER_IMAGE} /bin/bash -l -c 'cd metasploit-omnibus && make'"
++          fi
++        env:
++          LINUX32: ${{ matrix.docker.linux32 }}
++
++      - name: Test artifact
++        run: |
++          echo "Testing artifact"
++
++          cat > test_script.sh <<EOF
++          #!/bin/bash -ex
++          find metasploit-omnibus/pkg
++          $INSTALL_ARTIFACT
++          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
++          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-upgraded-dependency.rb /opt/metasploit-framework
++
++          mkdir ~/.msf4; touch ~/.msf4/initial_setup_complete
++
++          msfconsole -qx 'setg variable test; version; exit'
++          msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
++          msfd -h
++          msfrpc -h
++          msfrpcd -h
++          msfdb -h
++          msfbinscan -h
++          msfrop -h
++          msfelfscan -h
++          msfmachscan -h
++          msfpescan -h
++          # msfupdate
++
++          # Test database connectivity (catches libpq/OpenSSL ABI mismatches)
++          msfdb init
++          msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
++          grep -q "Connected" /tmp/db_status.txt
++
++          # Test TCP connection
++          ruby -ryaml -e '
++            path = File.expand_path("~/.msf4/database.yml")
++            cfg = if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("3.1")
++              YAML.load_file(path, aliases: true)
++            else
++              YAML.load_file(path)
++            end
++            prod = cfg["production"]
++            prod["host"] = "127.0.0.1"
++            prod["port"] = prod.fetch("port", 5432)
++            prod.delete("socket")
++            File.write(path, YAML.dump(cfg))
++          '
++          msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
++          grep -q "Connected" /tmp/db_status.txt
++          EOF
++
++          chmod +x ./test_script.sh
++
++          # If required, change reported architecture in new program environment and set personality flags
++          if [ ! -z "${LINUX32}" ] ; then
++            echo 'setting linux32'
++            /bin/bash -x -c "docker run --rm --volume $(pwd):$(pwd) --workdir $(pwd) --user jenkins ${DOCKER_IMAGE} linux32 /bin/bash -l -c './test_script.sh'"
++          else
++            /bin/bash -x -c "docker run --rm --volume $(pwd):$(pwd) --workdir $(pwd) --user jenkins ${DOCKER_IMAGE} /bin/bash -l -c './test_script.sh'"
++          fi
++        env:
++          LINUX32: ${{ matrix.docker.linux32 }}
++          INSTALL_ARTIFACT: ${{ matrix.docker.installer }}
++
++      - name: Upload artifact
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: metasploit-${{ matrix.docker.name }}-installers
++          path: |
++            metasploit-omnibus/pkg/*.pkg
++            metasploit-omnibus/pkg/*.rpm
++            metasploit-omnibus/pkg/*.msi
++            metasploit-omnibus/pkg/*.deb
++          if-no-files-found: error
++          retention-days: 7
++
++
++  docker_arm:
++    runs-on: ${{ matrix.os }}
++    timeout-minutes: 360
++
++    strategy:
++      fail-fast: false
++      matrix:
++        os:
++          - ubuntu-latest
++        # From: 'ls ./docker/'
++        docker:
++          # Skipped as not working
++          # - { dockerfile: 'debian-aarch64', previousImage: '' }
++          - { name: 'debian-armv7', previousDockerhubImage: 'rapid7/msf-debian-armv7-omnibus:2024_04' }
++
++    name: ${{ matrix.os }} - ${{ matrix.docker.name }}
++    steps:
++      - name: Checkout omnibus
++        uses: actions/checkout@v4
++        with:
++          path: metasploit-omnibus
++
++      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
++        id: changes
++        with:
++          # Private validation compares against the actual upstream base.
++          base: 494135f0cd93c71145b9ad1f173b8d696c67b0ba
++          filters: |
++            docker:
++              - 'docker/**'
++          working-directory: metasploit-omnibus
++
++      # Set the env vars for either a new build, or a previously successful build
++      - name: Set docker build metadata
++        run: |
++          BUILD_DATE=$(date "+%Y_%m")
++          export BUILD_DATE
++          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
++          if test "${HAS_MODIFIED_DOCKERFILES}" = 'true'; then
++            echo 'New build required'
++            echo "DOCKER_IMAGE=rapid7/${DOCKER_NAME}-omnibus:${BUILD_DATE}" >> "$GITHUB_ENV"
++          else
++            echo 'Reusing old image'
++            echo "DOCKER_IMAGE=${PREVIOUS_DOCKERHUB_IMAGE}" >> "$GITHUB_ENV"
++          fi
++        env:
++          HAS_MODIFIED_DOCKERFILES: ${{ steps.changes.outputs.docker }}
++          DOCKER_NAME: ${{ matrix.docker.name }}
++          PREVIOUS_DOCKERHUB_IMAGE: ${{ matrix.docker.previousDockerhubImage }}
++
++      - name: Build Docker image
++        if: steps.changes.outputs.docker == 'true'
++        run: |
++          /bin/bash -x -c "cd metasploit-omnibus && docker build --tag ${DOCKER_IMAGE} -f ./docker/${DOCKER_NAME}/Dockerfile ./docker/${DOCKER_NAME}"
++        env:
++          DOCKER_NAME: ${{ matrix.docker.name }}
++
++      # Checkout again - but with the submodules enabled to start a real build
++      - name: Checkout omnibus and submodules
++        uses: actions/checkout@v4
++        with:
++          submodules: true
++          path: metasploit-omnibus
++
++      # Checkout framework
++      - name: Checkout metasploit-framework code
++        uses: actions/checkout@v4
++        with:
++          repository: rapid7/metasploit-framework
++          ref: 15fd116f30d5f652e9153f18d0965aa2d5ec3841
++          path: metasploit-framework
++
++      - name: Stage the verified upgrade archives for this private trial
++        run: |
++          curl --fail --location --output metasploit-omnibus/local/cache/zlib-1.4.tar.gz https://zlib.net/fossils/zlib-1.4.tar.gz
++          echo "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584  metasploit-omnibus/local/cache/zlib-1.4.tar.gz" | shasum -a 256 -c -
++          curl --fail --location --output metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz
++          echo "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4  metasploit-omnibus/local/cache/libffi-3.8.0.tar.gz" | shasum -a 256 -c -
++
++      - name: Make room for the ARMv7 package build
++        run: |
++          test "$RUNNER_ENVIRONMENT" = github-hosted
++          df -h
++          df -i
++          docker system df
++          # Packaging does not use the hosted Android SDK.
++          if test -d /usr/local/lib/android/sdk; then
++            sudo du -sh /usr/local/lib/android/sdk
++            sudo rm -rf -- /usr/local/lib/android/sdk
++          fi
++          df -h
++          df -i
++
++      - name: Run omnibus
++        timeout-minutes: 340
++        run: |
++          set -euxo pipefail
++          echo "Building new image from ${DOCKER_IMAGE}"
++          mkdir -p metasploit-omnibus/certs
++          curl -L -o metasploit-omnibus/certs/ca-certificates.crt https://curl.haxx.se/ca/cacert.pem
++          cat > Dockerfile_temp <<EOF
++          FROM ${DOCKER_IMAGE} AS build
++          RUN ["cross-build-start"]
++          COPY metasploit-omnibus /metasploit-omnibus
++          COPY metasploit-framework /metasploit-framework
++          RUN bash -l -c "cd /metasploit-omnibus && make && /opt/metasploit-framework/embedded/bin/ruby ci/verify-upgraded-dependency.rb /opt/metasploit-framework"
++          RUN ["cross-build-end"]
++          FROM scratch AS packages
++          COPY --from=build /metasploit-omnibus/pkg/ /
++          EOF
++          cat > Dockerfile_temp.dockerignore <<EOF
++          *
++          !metasploit-omnibus
++          !metasploit-framework
++          EOF
++
++          # Export the installers without loading the complete build image.
++          docker build --no-cache --progress=plain --target packages \
++            --output type=local,dest=metasploit-omnibus/pkg \
++            --file Dockerfile_temp . 2>&1 | tee armv7-build.log
++
++      - name: Record final runner capacity
++        if: always()
++        run: |
++          df -h
++          df -i
++          docker system df
++
++      - name: Preserve build diagnostics
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: armv7-build-diagnostics
++          path: armv7-build.log
++          if-no-files-found: warn
++          retention-days: 7
++
++      - name: Upload artifact
++        uses: actions/upload-artifact@v4
++        with:
++          name: metasploit-${{ matrix.docker.name }}-installers
++          path: |
++            metasploit-omnibus/pkg/*.pkg
++            metasploit-omnibus/pkg/*.rpm
++            metasploit-omnibus/pkg/*.msi
++            metasploit-omnibus/pkg/*.deb
++          if-no-files-found: error
++          retention-days: 7
++
+diff --git a/.github/workflows/verify.yml b/.github/workflows/verify.yml
+index 3a99a97..8b908cc 100644
+--- a/.github/workflows/verify.yml
++++ b/.github/workflows/verify.yml
+@@ -32,7 +32,7 @@ jobs:
+   #
+   docker_arm:
+     runs-on: ${{ matrix.os }}
+-    timeout-minutes: 600
++    timeout-minutes: 360
+ 
+     strategy:
+       fail-fast: false
+@@ -55,6 +55,8 @@ jobs:
+       - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+         id: changes
+         with:
++          # Private validation compares against the actual upstream base.
++          base: 494135f0cd93c71145b9ad1f173b8d696c67b0ba
+           filters: |
+             docker:
+               - 'docker/**'
+@@ -95,24 +97,40 @@ jobs:
+       - name: Checkout metasploit-framework code
+         uses: actions/checkout@v4
+         with:
+-          repository: rapid7/metasploit-framework
++          repository: pauljccode/metasploit-framework
++          ref: 809e1587b522f042e04013a724e8827184696b01
+           path: metasploit-framework
+-          # If testing a custom branch is required
+-          # ref: 'update-bundler-version'
++
++      - name: Make room for the ARMv7 package build
++        run: |
++          test "$RUNNER_ENVIRONMENT" = github-hosted
++          df -h
++          df -i
++          docker system df
++          # Packaging does not use the hosted Android SDK.
++          if test -d /usr/local/lib/android/sdk; then
++            sudo du -sh /usr/local/lib/android/sdk
++            sudo rm -rf -- /usr/local/lib/android/sdk
++          fi
++          df -h
++          df -i
+ 
+       - name: Run omnibus
++        timeout-minutes: 340
+         run: |
+-          set -x
++          set -euxo pipefail
+           echo "Building new image from ${DOCKER_IMAGE}"
+           mkdir -p metasploit-omnibus/certs
+           curl -L -o metasploit-omnibus/certs/ca-certificates.crt https://curl.haxx.se/ca/cacert.pem
+           cat > Dockerfile_temp <<EOF
+-          FROM ${DOCKER_IMAGE}
++          FROM ${DOCKER_IMAGE} AS build
+           RUN ["cross-build-start"]
+           COPY metasploit-omnibus /metasploit-omnibus
+           COPY metasploit-framework /metasploit-framework
+           RUN bash -l -c "cd /metasploit-omnibus && make"
+           RUN ["cross-build-end"]
++          FROM scratch AS packages
++          COPY --from=build /metasploit-omnibus/pkg/ /
+           EOF
+           cat > Dockerfile_temp.dockerignore <<EOF
+           *
+@@ -120,14 +138,26 @@ jobs:
+           !metasploit-framework
+           EOF
+ 
+-          export TEMP_DOCKER_IMAGE=${DOCKER_IMAGE}-build-artifacts
+-          docker build --no-cache --rm --tag ${TEMP_DOCKER_IMAGE} --file Dockerfile_temp .
++          # Export the installers without loading the complete build image.
++          docker build --no-cache --progress=plain --target packages \
++            --output type=local,dest=metasploit-omnibus/pkg \
++            --file Dockerfile_temp . 2>&1 | tee armv7-build.log
+ 
+-          # Create the temp image and copy out the build assets
+-          id=$(docker create ${TEMP_DOCKER_IMAGE})
+-          docker cp $id:/metasploit-omnibus/pkg metasploit-omnibus
+-          docker rm -v $id
+-          docker rmi ${TEMP_DOCKER_IMAGE}
++      - name: Record final runner capacity
++        if: always()
++        run: |
++          df -h
++          df -i
++          docker system df
++
++      - name: Preserve build diagnostics
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: armv7-build-diagnostics
++          path: armv7-build.log
++          if-no-files-found: warn
++          retention-days: 7
+ 
+       - name: Upload artifact
+         uses: actions/upload-artifact@v4
+@@ -138,10 +168,11 @@ jobs:
+             metasploit-omnibus/pkg/*.rpm
+             metasploit-omnibus/pkg/*.msi
+             metasploit-omnibus/pkg/*.deb
++          if-no-files-found: error
+           retention-days: 7
+ 
+   docker_intel:
+-    runs-on: ${{ matrix.os }}
++    runs-on: ${{ matrix.docker.runner || matrix.os }}
+     timeout-minutes: 180
+ 
+     strategy:
+@@ -168,6 +199,8 @@ jobs:
+           #  previousDockerhubImage: 'rapid7/msf-ubuntu1204-x64-omnibus:2024_04'
+           #  installer: 'sudo dpkg -i metasploit-omnibus/pkg/*.deb'
+           - name: 'ubuntu1204-x86'
++            # Docker 29.4.2 on Ubuntu 26 blocks this image's legacy socket calls.
++            runner: ubuntu-24.04
+             previousDockerhubImage: 'rapid7/msf-ubuntu1204-x86-omnibus:2024_04'
+             linux32: true
+             installer: 'sudo dpkg -i metasploit-omnibus/pkg/metasploit-framework_*_i386.deb'
+@@ -175,7 +208,7 @@ jobs:
+             previousDockerhubImage: 'rapid7/msf-ubuntu1804-x64-omnibus:2024_04'
+             installer: 'sudo dpkg -i metasploit-omnibus/pkg/metasploit-framework_*_amd64.deb'
+ 
+-    name: ${{ matrix.os }} - ${{ matrix.docker.name }}
++    name: ${{ matrix.docker.runner || matrix.os }} - ${{ matrix.docker.name }}
+     steps:
+       - name: Checkout omnibus
+         uses: actions/checkout@v4
+@@ -245,6 +278,7 @@ jobs:
+           #!/bin/bash -ex
+           find metasploit-omnibus/pkg
+           $INSTALL_ARTIFACT
++          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
+ 
+           mkdir ~/.msf4; touch ~/.msf4/initial_setup_complete
+ 
+@@ -317,6 +351,10 @@ jobs:
+     timeout-minutes: 15
+     name: ubuntu-latest db connectivity test
+     steps:
++      - uses: actions/checkout@v4
++        with:
++          path: validation-source
++
+       - uses: actions/download-artifact@v4
+         with:
+           name: metasploit-ubuntu1804-x64-installers
+@@ -326,6 +364,7 @@ jobs:
+         run: |
+           set -ex
+           sudo dpkg -i pkg/metasploit-framework_*_amd64.deb
++          /opt/metasploit-framework/embedded/bin/ruby validation-source/ci/verify-database-readiness-package.rb /opt/metasploit-framework
+           msfdb init
+           msfconsole -qx 'db_status; exit' | tee /tmp/db_status.txt
+           grep -q "Connected" /tmp/db_status.txt
+@@ -365,10 +404,13 @@ jobs:
+     strategy:
+       fail-fast: false
+       matrix:
+-        os:
+-          - macos-14
+-        ruby:
+-          - 3.2.5
++        include:
++          - os: macos-15
++            arch: arm64
++            ruby: 3.2.5
++          - os: macos-15-intel
++            arch: x86_64
++            ruby: 3.2.5
+ 
+     name: ${{ matrix.os }}
+     steps:
+@@ -388,6 +430,12 @@ jobs:
+           cache-version: 4
+           working-directory: metasploit-omnibus
+ 
++      - name: Test macOS updater
++        run: ruby metasploit-omnibus/test/msfupdate_macos_test.rb
++
++      - name: Test macOS package verifier
++        run: ruby metasploit-omnibus/test/verify_macos_package_test.rb
++
+       - name: Run omnibus
+         run: |
+           sudo mkdir -p /var/cache/omnibus
+@@ -406,6 +454,9 @@ jobs:
+           /usr/bin/find metasploit-omnibus/pkg
+           PACKAGE=$(pwd)/$(/usr/bin/find metasploit-omnibus/pkg/metasploit*.pkg | head -n 1)
+           sudo installer -pkg ${PACKAGE} -target /
++          /opt/metasploit-framework/embedded/bin/ruby metasploit-omnibus/ci/verify-database-readiness-package.rb /opt/metasploit-framework
++
++          ruby metasploit-omnibus/scripts/verify_macos_package.rb --arch '${{ matrix.arch }}'
+ 
+           /opt/metasploit-framework/bin/msfconsole -qx 'setg variable test; version; exit'
+           /opt/metasploit-framework/bin/msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
+@@ -440,7 +491,7 @@ jobs:
+       - name: Upload artifact
+         uses: actions/upload-artifact@v4
+         with:
+-          name: metasploit-osx-installers
++          name: metasploit-osx-${{ matrix.arch }}-installers
+           path: |
+             metasploit-omnibus/pkg/*.pkg
+             metasploit-omnibus/pkg/*.rpm
+@@ -516,13 +567,29 @@ jobs:
+       #     bundle
+       #     rake gem
+ 
++      - name: Preserve Framework source line endings
++        shell: pwsh
++        run: git config --global core.autocrlf false
++
+       # Checkout framework
+       - name: Checkout metasploit-framework code
+         uses: actions/checkout@v4
+         with:
+-          repository: rapid7/metasploit-framework
++          repository: pauljccode/metasploit-framework
++          ref: 809e1587b522f042e04013a724e8827184696b01
+           path: metasploit-framework
+ 
++      - name: Test source cache helper
++        shell: pwsh
++        run: |
++          ruby metasploit-omnibus/ci/test-nokogiri-archive-cache.rb
++          Exit $LASTEXITCODE
++
++      - name: Prefetch verified Nokogiri source
++        id: source_cache
++        shell: pwsh
++        run: ./metasploit-omnibus/ci/prepare-nokogiri-source-cache.ps1
++
+       - name: Extract xz files
+         run: |
+           cd metasploit-omnibus
+@@ -533,14 +600,46 @@ jobs:
+         shell: cmd
+         env:
+           MSYSTEM: MINGW64
++          MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD: ${{ steps.source_cache.outputs.preload }}
+         run: |
+           cd metasploit-omnibus
+           make dependencies
++          if errorlevel 1 exit /b 1
++
++          ruby ci/test-omnibus-cache-environment.rb
++          if errorlevel 1 exit /b 1
+ 
+           rem Don't run the main build itself under `make`, as the process will be spawned under msys2
+           rem and the ridk.cmd Ruby installer will forcibly kill the msys2 process before attempting to install ruby
+           ruby bin/omnibus build metasploit-framework
+ 
++      - name: Verify built PostgreSQL readiness correction
++        shell: pwsh
++        run: |
++          ruby metasploit-omnibus/ci/verify-database-readiness-package.rb C:/metasploit-framework
++          Exit $LASTEXITCODE
++
++      - name: Test built Bootsnap source encoding
++        shell: pwsh
++        run: |
++          C:/metasploit-framework/embedded/bin/ruby.exe metasploit-omnibus/ci/verify-windows-bootsnap.rb C:/metasploit-framework
++          Exit $LASTEXITCODE
++
++      - name: Verify production source cache receipt
++        shell: pwsh
++        run: |
++          ruby metasploit-omnibus/ci/verify-nokogiri-source-cache.rb
++          Exit $LASTEXITCODE
++
++      - name: Retain source cache receipt
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: windows-source-cache-receipt
++          path: ${{ runner.temp }}/msf-nokogiri-source-cache/source-cache-use.yml
++          if-no-files-found: error
++          retention-days: 7
++
+       - name: Upload artifact
+         uses: actions/upload-artifact@v4
+         with:
+@@ -572,6 +671,10 @@ jobs:
+     name: ${{ matrix.os }} testing
+     steps:
+ 
++      - uses: actions/checkout@v4
++        with:
++          path: validation-source
++
+       - uses: actions/download-artifact@v4
+         name: Download Windows arifacts
+         id: download_windows_artifacts
+@@ -595,6 +698,18 @@ jobs:
+           echo "finished install"
+           Exit $install_process.ExitCode
+ 
++      - name: Verify installed PostgreSQL readiness correction
++        shell: pwsh
++        run: |
++          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-database-readiness-package.rb D:/metasploit-framework
++          Exit $LASTEXITCODE
++
++      - name: Test installed Bootsnap source encoding
++        shell: pwsh
++        run: |
++          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-windows-bootsnap.rb D:/metasploit-framework
++          Exit $LASTEXITCODE
++
+       - shell: pwsh
+         run: |
+           d:\metasploit-framework\bin\msfvenom -p windows/meterpreter/reverse_tcp -f exe -o test.exe
+@@ -644,9 +759,11 @@ jobs:
+         shell: pwsh
+         run: |
+           d:\metasploit-framework\bin\msfdb init
++          $initStatus = $LASTEXITCODE
+           # Dump PG logs for debugging if init fails
+           $logFile = Join-Path $env:USERPROFILE ".msf4\db\log"
+           if (Test-Path $logFile) { echo "=== PostgreSQL log ==="; Get-Content $logFile; echo "===" }
++          if ($initStatus -ne 0) { Exit $initStatus }
+           $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
+           echo $output
+           if ($output -notmatch "Connected") { Exit 1 }
+@@ -666,3 +783,9 @@ jobs:
+           $output = d:\metasploit-framework\bin\msfconsole -qx 'db_status; exit'
+           echo $output
+           if ($output -notmatch "Connected") { Exit 1 }
++
++      - name: Query the packaged database over TCP
++        shell: pwsh
++        run: |
++          d:\metasploit-framework\embedded\bin\ruby.exe validation-source/ci/verify-windows-database-query.rb
++          Exit $LASTEXITCODE
+diff --git a/README.md b/README.md
+index 851fefa..34feaa7 100644
+--- a/README.md
++++ b/README.md
+@@ -159,6 +159,98 @@ xz -d local/cache/*.xz
+ 
+ From OS X, first install XCode and the command line development tools. I use ruby, bundler, git, bison and flex from the Mac Homebrew project. The rest of the steps are identical to building on Ubuntu. A .pkg file will be under the pkg directory instead.
+ 
++Use the Ruby version in `.ruby-version` for the Omnibus build environment.
++On Apple silicon, newer Apple Clang versions can reject the assembly bundled
++with the locked `ffi` gem with `invalid CFI advance_loc expression` (see
++[libffi issue 852](https://github.com/libffi/libffi/issues/852)). If this occurs
++during the initial `bundle install`, build that gem against Homebrew's libffi:
++
++```sh
++brew install libffi pkgconf
++PKG_CONFIG_PATH="$(brew --prefix libffi)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
++  BUNDLE_BUILD__FFI=--enable-system-libffi bundle install
++```
++
++This preserves the gem lockfile and applies the libffi selection to the
++Omnibus bootstrap dependencies. Omnibus separately builds the libraries
++included in the resulting Metasploit package.
++
++## macOS updater checks
++
++The macOS updater preserves the architecture of an existing packaged Ruby.
++For a fresh installation, or a universal Ruby, it selects the native hardware
++architecture even when launched from a Rosetta shell. Before invoking Apple's
++installer it requires a successful download, a valid package signature, and
++Distribution metadata permitting that architecture.
++Architecture inspection uses macOS's built-in `file` command, so updating
++does not require Xcode command line tools or execution of the installed Ruby.
++
++Downloads use a private temporary directory, finite connection/transfer
++timeouts, HTTPS-only transfers and redirects, and cleanup on failure or
++interruption. The temporary directory is created under macOS's root-owned
++sticky `/private/tmp`, ignoring an inherited user-owned `TMPDIR`. A missing, partial, unsigned,
++or wrong-architecture package leaves the installation unchanged. Installer
++failures are reported to the caller, including when updating through `sudo`;
++changes already made by Apple's installer are not automatically rolled back.
++
++The release URL remains the existing macOS endpoint. If that endpoint only
++provides an Intel package, an arm64 installation receives a clear refusal
++instead of being overwritten. Publishing architecture-specific URLs or a
++universal release is a separate release-infrastructure change.
++
++Run the updater regression tests on macOS with Xcode command line tools
++(used to compile test fixtures) and Minitest installed:
++
++```sh
++ruby test/msfupdate_macos_test.rb
++```
++
++These exercise the production shell functions with controlled download,
++signature, architecture, and installer outcomes, using the real XML parser.
++They also interrupt a running download process group and verify cleanup. They
++compile arm64, Intel and universal executables and verify their detection with
++the real `file` command while developer tools are blocked from the updater's
++PATH. They do not install a package or establish acceptance of an officially
++signed release.
++
++## Verifying native macOS packages
++
++After installing a macOS package, verify its host architecture and linked
++libraries before running the usual console and database smoke tests:
++
++```sh
++ruby scripts/verify_macos_package.rb --arch arm64
++```
++
++Use `--arch x86_64` for an Intel package. The expected architecture is explicit
++so an accidentally translated build cannot redefine the test's expectation.
++The verifier checks Mach-O executables in `embedded/bin`, shared libraries and
++Ruby extensions in `embedded/lib`, and their transitive dependencies. It rejects
++missing libraries, architecture mismatches, and links outside the package other
++than macOS system libraries. Host images must have loadable Mach-O types and
++macOS platform metadata; an arm64 iOS library is rejected. It also starts the
++packaged Ruby with gems disabled
++and verifies its reported platform and CPU. Universal libraries are accepted
++when they contain the expected architecture.
++
++Metasploit's target payload directories are excluded from the initial host
++inventory. A host dependency that points into those directories is still
++checked. Debug symbols, static archives, and build object files are not runtime
++libraries. System libraries in the macOS dyld shared cache need not exist as
++individual files on disk.
++
++To inspect an extracted package, pass `--root` with its expanded `Payload`
++directory. Use `--static-only` to avoid executing packaged Ruby; that mode does
++not prove runtime compatibility. These checks do not establish package signing,
++notarization, or successful installation and upgrades on a clean machine.
++
++The regression tests build small, real arm64, Intel, and universal Mach-O
++fixtures. Run them on macOS with Xcode command line tools and Minitest installed:
++
++```sh
++ruby test/verify_macos_package_test.rb
++```
++
+ ## Clean
+ 
+ You can clean up all temporary files generated during the build process with
+diff --git a/ci/WINDOWS-PACKAGE.md b/ci/WINDOWS-PACKAGE.md
+new file mode 100644
+index 0000000..db7116d
+--- /dev/null
++++ b/ci/WINDOWS-PACKAGE.md
+@@ -0,0 +1,20 @@
++# Windows Bootsnap source encoding
++
++Framework sets Ruby's default internal encoding to ASCII-8BIT. Bootsnap
++1.26.0's Prism workaround can transcode UTF-8 source under that setting and
++raise `Encoding::UndefinedConversionError` before compilation.
++
++The Windows package requires Bootsnap 1.26.1 or later, which includes
++[Bootsnap #576](https://github.com/rails/bootsnap/pull/576). The released
++implementation disables internal transcoding; no source patch is applied.
++
++Verify runs `ci/verify-windows-bootsnap.rb` with the packaged Ruby before
++packaging and after fresh MSI installation. The check compiles UTF-8 and
++Latin-1 fixtures under four default internal encodings, then reads each
++through the cache again. It asserts exact bytes, encoding and frozen-string
++semantics. It prints the loaded Bootsnap and Ruby versions.
++
++The existing console, payload, CLI and local/TCP database checks also run.
++`ci/verify-windows-database-query.rb` asserts an actual SQL result through
++packaged Ruby/pg. These checks do not establish Windows dependency closure;
++Omnibus currently skips that health inspection on Windows.
+diff --git a/ci/WINDOWS-SOURCE-CACHE.md b/ci/WINDOWS-SOURCE-CACHE.md
+new file mode 100644
+index 0000000..72c9628
+--- /dev/null
++++ b/ci/WINDOWS-SOURCE-CACHE.md
+@@ -0,0 +1,34 @@
++# Windows Nokogiri source cache
++
++Nokogiri 1.19.4 downloads libiconv through a GNU mirror selector that can
++redirect HTTPS to HTTP or time out. Windows Verify prefetches the identical
++archive from the maintainer-hosted HTTPS mirror used in
++[Nokogiri PR 3671](https://github.com/sparklemotion/nokogiri/pull/3671).
++The released gem's SHA-256 and MiniPortile's verification remain unchanged.
++
++The download accepts HTTPS only, including redirects, has bounded timeouts
++and retries, and publishes the archive only after checksum verification.
++There is no persistent Actions cache or compiled cache.
++
++A build-only Ruby preload stages the archive after RubyGems extraction and
++before extension compilation. RubyGems deletes the gem directory during
++extraction, so staging before installation would lose it. The helper reads
++Nokogiri's dependency identity and rejects missing or changed bytes. Other
++gems delegate directly to RubyGems. Omnibus clears inherited RUBYOPT, so the
++Windows recipe forwards the opt-in preload explicitly to bundle install.
++The helper is not installed and the fresh-runner runtime job has no preload.
++
++CI verifies a receipt against the embedded gem metadata and retained source
++archive before uploading the MSI. Nokogiri deletes ports/archives after
++compilation, so the receipt records verified staging before that cleanup.
++Conflicting receipts fail rather than being overwritten.
++
++Run `ruby ci/test-nokogiri-archive-cache.rb` for corruption, metadata and real
++RubyGems extraction-order tests. After `make dependencies`, run
++`ruby ci/test-omnibus-cache-environment.rb` to verify the locked Omnibus
++implementation's environment boundary. The complete Verify workflow remains
++the package build and fresh installation gate.
++
++Retire this preload when the selected released Nokogiri supports its upstream
++mirror option and passes the complete Windows build and installation tests.
++MSYS2 and other RubyGems downloads remain independent network dependencies.
+diff --git a/ci/database-recovery-sources.json b/ci/database-recovery-sources.json
+new file mode 100644
+index 0000000..71b0ce9
+--- /dev/null
++++ b/ci/database-recovery-sources.json
+@@ -0,0 +1,9 @@
++{
++  "framework_commit": "15fd116f30d5f652e9153f18d0965aa2d5ec3841",
++  "migration_candidate_commit": "711d40bb2bc115bf6d68d2b85865083929615a6a",
++  "files": {
++    "lib/msfdb_helpers/pg_ctl.rb": "d4d2dc29b020916ec01cd64585897348d69b1ab334a9437ad95c18df31d767a9",
++    "lib/msfdb_helpers/db_interface.rb": "f254fe87b4e09a0127afbb297f08b27662595e02ca98a8c598fe12c6579a17ae",
++    "msfdb": "cc9374d8071c0ab7e64aea5396f91dc86f6c3fbc57c1ceebbe4d752ee0dde69b"
++  }
++}
+diff --git a/ci/nokogiri-archive-cache.rb b/ci/nokogiri-archive-cache.rb
+new file mode 100644
+index 0000000..bcbd883
+--- /dev/null
++++ b/ci/nokogiri-archive-cache.rb
+@@ -0,0 +1,73 @@
++# frozen_string_literal: true
++
++require "digest"
++require "fileutils"
++require "rubygems/installer"
++require "tempfile"
++
++# Build-only source cache for released Nokogiri gems that predate the mirror
++# option in https://github.com/sparklemotion/nokogiri/pull/3671. No gem source,
++# dependency version, checksum, or MiniPortile download behavior is changed.
++module NokogiriArchiveCache
++  def self.seed(gem_dir, cache_dir)
++    require "yaml"
++    dependency = YAML.safe_load_file(File.join(gem_dir, "dependencies.yml"), aliases: false).fetch("libiconv")
++    version = dependency.fetch("version")
++    checksum = dependency.fetch("sha256")
++    unless version.is_a?(String) && version.match?(/\A\d+(?:\.\d+)+\z/) &&
++        checksum.is_a?(String) && checksum.match?(/\A[0-9a-f]{64}\z/)
++      raise "Invalid Nokogiri libiconv dependency identity"
++    end
++
++    filename = "libiconv-#{version}.tar.gz"
++    source = File.join(cache_dir, filename)
++    verify(source, checksum)
++    archives = File.join(gem_dir, "ports", "archives")
++    destination = File.join(archives, filename)
++    if File.exist?(destination)
++      verify(destination, checksum)
++    else
++      FileUtils.mkdir_p(archives)
++      Tempfile.create([".libiconv-", ".tmp"], archives) do |temporary|
++        temporary.binmode
++        File.open(source, "rb") { |input| IO.copy_stream(input, temporary) }
++        temporary.flush
++        verify(temporary.path, checksum)
++        temporary.close
++        File.rename(temporary.path, destination)
++      end
++    end
++    receipt = {
++      "schema" => 1,
++      "gem_directory" => File.expand_path(gem_dir).tr("\\", "/"),
++      "archive" => filename,
++      "sha256" => checksum,
++      "ruby_version" => RUBY_VERSION,
++      "ruby_platform" => RUBY_PLATFORM
++    }
++    receipt_path = File.join(cache_dir, "source-cache-use.yml")
++    if File.exist?(receipt_path)
++      previous = YAML.safe_load_file(receipt_path, aliases: false)
++      raise "Conflicting Nokogiri source cache receipt" unless previous == receipt
++    else
++      File.write(receipt_path, YAML.dump(receipt), mode: "wx")
++    end
++    puts "NOKOGIRI_SOURCE_CACHE_VERIFIED #{filename} sha256=#{checksum}"
++  end
++
++  def self.verify(path, checksum)
++    raise "Nokogiri source cache checksum mismatch: #{path}" unless Digest::SHA256.file(path).hexdigest == checksum
++  end
++
++  def build_extensions
++    if spec.name == "nokogiri"
++      NokogiriArchiveCache.seed(gem_dir, ENV.fetch("MSF_NOKOGIRI_SOURCE_CACHE"))
++    end
++    super
++  end
++end
++
++# RubyGems removes the gem directory before extracting it. Seed after extraction,
++# immediately before compilation; Bundler's installer delegates this method to
++# RubyGems for uncached native extensions. MiniPortile verifies again on extract.
++Gem::Installer.prepend(NokogiriArchiveCache)
+diff --git a/ci/prepare-nokogiri-source-cache.ps1 b/ci/prepare-nokogiri-source-cache.ps1
+new file mode 100644
+index 0000000..8611907
+--- /dev/null
++++ b/ci/prepare-nokogiri-source-cache.ps1
+@@ -0,0 +1,34 @@
++$ErrorActionPreference = 'Stop'
++
++# Same source archive and SHA-256 as Nokogiri 1.19.4 dependencies.yml.
++# Maintainer-hosted mirror introduced by sparklemotion/nokogiri#3671.
++$uri = 'https://nokogiri.org/mirror/gnu/libiconv/libiconv-1.18.tar.gz'
++$expected = '3b08f5f4f9b4eb82f151a7040bfd6fe6c6fb922efe4b1659c66ea933276965e8'
++$cacheDir = Join-Path $env:RUNNER_TEMP 'msf-nokogiri-source-cache'
++New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
++if (Test-Path (Join-Path $cacheDir 'source-cache-use.yml')) { throw 'Unexpected stale source cache receipt' }
++$archive = Join-Path $cacheDir 'libiconv-1.18.tar.gz'
++$partial = "$archive.part"
++if (Test-Path $partial) { throw "Unexpected partial download: $partial" }
++if (-not (Test-Path $archive)) {
++    try {
++        & curl.exe --fail --location --proto '=https' --proto-redir '=https' `
++            --connect-timeout 15 --max-time 120 --retry 2 --retry-max-time 180 `
++            --output $partial $uri
++        if ($LASTEXITCODE -ne 0) { throw "Source download failed: curl exit $LASTEXITCODE" }
++        if ((Get-FileHash -Algorithm SHA256 $partial).Hash.ToLowerInvariant() -ne $expected) {
++            throw 'Downloaded libiconv archive failed SHA-256 verification'
++        }
++        Move-Item $partial $archive
++    } finally {
++        if (Test-Path $partial) { Remove-Item $partial }
++    }
++}
++if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $expected) {
++    throw 'Cached libiconv archive failed SHA-256 verification'
++}
++$hook = (Join-Path $PSScriptRoot 'nokogiri-archive-cache.rb').Replace('\', '/')
++if ($hook -match '\s') { throw 'Ruby preload path must not contain whitespace' }
++"MSF_NOKOGIRI_SOURCE_CACHE=$cacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
++"preload=$hook" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
++Write-Output "NOKOGIRI_PREFETCH_VERIFIED libiconv-1.18.tar.gz sha256=$expected"
+diff --git a/ci/test-nokogiri-archive-cache.rb b/ci/test-nokogiri-archive-cache.rb
+new file mode 100644
+index 0000000..ccae77b
+--- /dev/null
++++ b/ci/test-nokogiri-archive-cache.rb
+@@ -0,0 +1,171 @@
++# frozen_string_literal: true
++
++require "minitest/autorun"
++require "tmpdir"
++require "yaml"
++require_relative "nokogiri-archive-cache"
++require_relative "verify-nokogiri-source-cache"
++
++class NokogiriArchiveCacheTest < Minitest::Test
++  def setup
++    @root = Dir.mktmpdir("nokogiri-cache-test")
++    @gem_dir = File.join(@root, "gem")
++    @cache = File.join(@root, "cache")
++    FileUtils.mkdir_p([@gem_dir, @cache])
++    @bytes = "verified source fixture\x00\xff".b
++    @checksum = Digest::SHA256.hexdigest(@bytes)
++    @source = File.join(@cache, "libiconv-1.18.tar.gz")
++    @destination = File.join(@gem_dir, "ports/archives/libiconv-1.18.tar.gz")
++    File.binwrite(@source, @bytes)
++    dependency
++  end
++
++  def teardown
++    FileUtils.remove_entry(@root)
++  end
++
++  def dependency(version = "1.18", checksum = @checksum)
++    File.write(File.join(@gem_dir, "dependencies.yml"),
++      { "libiconv" => { "version" => version, "sha256" => checksum } }.to_yaml)
++  end
++
++  def test_verified_cache_is_copied_without_changing_gem_metadata
++    original = File.binread(File.join(@gem_dir, "dependencies.yml"))
++    capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    assert_equal @bytes, File.binread(@destination)
++    assert_equal original, File.binread(File.join(@gem_dir, "dependencies.yml"))
++    receipt = YAML.safe_load_file(File.join(@cache, "source-cache-use.yml"))
++    assert_equal @checksum, receipt.fetch("sha256")
++    assert_equal File.expand_path(@gem_dir).tr("\\", "/"), receipt.fetch("gem_directory")
++    assert_empty Dir.glob(File.join(File.dirname(@destination), ".libiconv-*"))
++  end
++
++  def test_corrupt_cache_is_rejected_before_destination_creation
++    File.binwrite(@source, "wrong")
++    assert_raises(RuntimeError) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    refute File.exist?(@destination)
++    refute File.exist?(File.join(@cache, "source-cache-use.yml"))
++  end
++
++  def test_changed_dependency_checksum_is_not_overridden
++    dependency("1.18", "0" * 64)
++    assert_raises(RuntimeError) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    refute File.exist?(@destination)
++  end
++
++  def test_missing_archive_is_not_silently_downloaded
++    File.unlink(@source)
++    assert_raises(Errno::ENOENT) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++  end
++
++  def test_invalid_dependency_paths_and_checksums_are_rejected
++    [["../../escape", @checksum], ["1.18", "invalid"]].each do |version, checksum|
++      dependency(version, checksum)
++      assert_raises(RuntimeError) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    end
++  end
++
++  def test_existing_corrupt_archive_is_not_overwritten
++    FileUtils.mkdir_p(File.dirname(@destination))
++    File.binwrite(@destination, "wrong")
++    assert_raises(RuntimeError) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    assert_equal "wrong", File.binread(@destination)
++  end
++
++  def test_verified_existing_archive_can_be_reused
++    2.times { capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) } }
++    assert_equal @bytes, File.binread(@destination)
++  end
++
++  def test_conflicting_receipt_is_not_replaced
++    path = File.join(@cache, "source-cache-use.yml")
++    File.write(path, { "schema" => "stale" }.to_yaml)
++    assert_raises(RuntimeError) { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    assert_equal({ "schema" => "stale" }, YAML.safe_load_file(path))
++  end
++
++  def verify_receipt
++    NokogiriSourceCacheReceipt.verify(@cache, gem_directory: @gem_dir,
++      sha256: @checksum, ruby_platform: RUBY_PLATFORM)
++  end
++
++  def test_receipt_verification_survives_nokogiri_source_cleanup
++    capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    FileUtils.remove_entry(File.join(@gem_dir, "ports"))
++    assert_equal @checksum, verify_receipt.fetch("sha256")
++    refute File.exist?(@destination)
++  end
++
++  def test_receipt_does_not_mask_changed_cache_or_gem_metadata
++    capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    File.binwrite(@source, "changed")
++    assert_raises(RuntimeError) { verify_receipt }
++    File.binwrite(@source, @bytes)
++    dependency("1.18", "0" * 64)
++    assert_raises(RuntimeError) { verify_receipt }
++  end
++
++  def test_receipt_from_another_gem_directory_is_rejected
++    capture_io { NokogiriArchiveCache.seed(@gem_dir, @cache) }
++    path = File.join(@cache, "source-cache-use.yml")
++    receipt = YAML.safe_load_file(path)
++    receipt["gem_directory"] += "-other"
++    File.write(path, receipt.to_yaml)
++    assert_raises(RuntimeError) { verify_receipt }
++  end
++
++  def test_hook_seeds_before_delegating_and_leaves_other_gems_alone
++    old_cache = ENV["MSF_NOKOGIRI_SOURCE_CACHE"]
++    base = Class.new do
++      attr_accessor :gem_dir, :spec, :observed_archive
++      def build_extensions
++        self.observed_archive = Dir.glob(File.join(gem_dir, "ports/archives/*"))
++        :compiled
++      end
++    end
++    base.prepend(NokogiriArchiveCache)
++    installer = base.new
++    installer.gem_dir = @gem_dir
++    installer.spec = Struct.new(:name).new("other")
++    assert_equal :compiled, installer.build_extensions
++    assert_empty installer.observed_archive
++    installer.spec.name = "nokogiri"
++    ENV["MSF_NOKOGIRI_SOURCE_CACHE"] = @cache
++    capture_io { assert_equal :compiled, installer.build_extensions }
++    assert_equal [@destination], installer.observed_archive
++  ensure
++    ENV["MSF_NOKOGIRI_SOURCE_CACHE"] = old_cache
++  end
++
++  def test_real_gem_installer_keeps_the_cache_through_extraction
++    old_cache = ENV["MSF_NOKOGIRI_SOURCE_CACHE"]
++    ENV["MSF_NOKOGIRI_SOURCE_CACHE"] = @cache
++    FileUtils.mkdir_p(File.join(@gem_dir, "ext"))
++    File.write(File.join(@gem_dir, "ext/extconf.rb"), <<~RUBY)
++      require "digest"
++      archive = File.expand_path("../ports/archives/libiconv-1.18.tar.gz", __dir__)
++      abort "archive not staged before compilation" unless Digest::SHA256.file(archive).hexdigest == #{@checksum.inspect}
++      File.write("Makefile", "all:\\ninstall:\\n")
++    RUBY
++    specification = Gem::Specification.new do |gem|
++      gem.name = "nokogiri"
++      gem.version = "0.0.0.cache.test"
++      gem.summary = "Installer ordering fixture"
++      gem.authors = ["Test fixture"]
++      gem.license = "MIT"
++      gem.homepage = "https://example.com"
++      gem.files = ["dependencies.yml", "ext/extconf.rb"]
++      gem.extensions = ["ext/extconf.rb"]
++    end
++    installed = nil
++    capture_io do
++      archive = Dir.chdir(@gem_dir) { Gem::Package.build(specification) }
++      installed = Gem::Installer.at(File.join(@gem_dir, archive),
++        install_dir: File.join(@root, "installed"), ignore_dependencies: true).install
++    end
++    assert File.exist?(installed.gem_build_complete_path)
++    assert_equal @bytes, File.binread(File.join(installed.full_gem_path, "ports/archives/libiconv-1.18.tar.gz"))
++  ensure
++    ENV["MSF_NOKOGIRI_SOURCE_CACHE"] = old_cache
++  end
++end
+diff --git a/ci/test-omnibus-cache-environment.rb b/ci/test-omnibus-cache-environment.rb
+new file mode 100644
+index 0000000..54f5a51
+--- /dev/null
++++ b/ci/test-omnibus-cache-environment.rb
+@@ -0,0 +1,28 @@
++# frozen_string_literal: true
++
++require "bundler/setup"
++require "omnibus"
++require "open3"
++require "rbconfig"
++
++preload = File.expand_path("nokogiri-archive-cache.rb", __dir__).tr("\\", "/")
++raise "Unsupported whitespace in preload path" if preload.match?(/\s/)
++old_options = ENV["RUBYOPT"]
++ENV["RUBYOPT"] = "-r#{preload}"
++probe = 'require "rubygems/installer"; puts Gem::Installer.ancestors.any? { |ancestor| ancestor.name == "NokogiriArchiveCache" }'
++builder = Omnibus::Builder.new(nil)
++begin
++  builder.send(:with_clean_env) do
++    raise "Omnibus did not clean inherited Ruby options" if ENV.key?("RUBYOPT")
++    output, error, status = Open3.capture3(RbConfig.ruby, "-e", probe)
++    raise "Inherited preload unexpectedly survived: #{error}" unless status.success? && output.strip == "false"
++
++    command_env = { "RUBYOPT" => "-r#{preload}" }
++    output, error, status = Open3.capture3(command_env, RbConfig.ruby, "-e", probe)
++    raise "Explicit command preload was not loaded: #{error}" unless status.success? && output.strip == "true"
++  end
++  raise "Omnibus did not restore the caller environment" unless ENV["RUBYOPT"] == "-r#{preload}"
++  puts "OMNIBUS_CACHE_ENVIRONMENT_BOUNDARY_PASSED"
++ensure
++  ENV["RUBYOPT"] = old_options
++end
+diff --git a/ci/verify-database-readiness-package.rb b/ci/verify-database-readiness-package.rb
+new file mode 100644
+index 0000000..9ee7c8b
+--- /dev/null
++++ b/ci/verify-database-readiness-package.rb
+@@ -0,0 +1,12 @@
++# frozen_string_literal: true
++
++require "digest"
++require "json"
++
++root = ARGV.fetch(0)
++manifest = JSON.parse(File.read(File.join(__dir__, "database-recovery-sources.json")))
++manifest.fetch("files").each do |relative_path, expected|
++  path = File.join(root, "embedded/framework", relative_path)
++  raise "Packaged PostgreSQL recovery source changed: #{relative_path}" unless Digest::SHA256.file(path).hexdigest == expected
++end
++puts "PACKAGED_POSTGRESQL_RECOVERY_VERIFIED framework=#{manifest.fetch('framework_commit')} migration_candidate=#{manifest.fetch('migration_candidate_commit')}"
+diff --git a/ci/verify-macos-deployment-target.rb b/ci/verify-macos-deployment-target.rb
+new file mode 100644
+index 0000000..664b7b2
+--- /dev/null
++++ b/ci/verify-macos-deployment-target.rb
+@@ -0,0 +1,24 @@
++# frozen_string_literal: true
++
++require_relative "../scripts/verify_macos_package"
++require "rubygems/version"
++require "json"
++
++root, architecture, maximum = ARGV
++raise "Usage: ROOT ARCH MAXIMUM_MACOS" unless maximum
++verifier = MacOSPackageVerifier.new(File.realpath(root), architecture)
++count = verifier.verify!
++versions = verifier.checked_images.sort.to_h do |path|
++  output, error, status = Open3.capture3("/usr/bin/otool", "-arch", architecture, "-l", path)
++  raise error unless status.success?
++  found = output.scan(/^\s*minos (\d+(?:\.\d+)*)\s*$/).flatten
++  if found.empty?
++    found = output.scan(/cmd LC_VERSION_MIN_MACOSX\s+cmdsize \d+\s+version (\d+(?:\.\d+)*)/).flatten
++  end
++  raise "Expected one macOS deployment target: #{path}" unless found.length == 1
++  [path.delete_prefix("#{File.realpath(root)}/"), found.fetch(0)]
++end
++puts JSON.pretty_generate(checked_images: count, minimum_versions: versions)
++too_new = versions.select { |_, version| Gem::Version.new(version) > Gem::Version.new(maximum) }
++raise "Images require newer macOS than #{maximum}: #{too_new}" unless too_new.empty?
++puts "PACKAGED_MACOS_DEPLOYMENT_TARGET_VERIFIED maximum=#{maximum} images=#{count}"
+diff --git a/ci/verify-nokogiri-source-cache.rb b/ci/verify-nokogiri-source-cache.rb
+new file mode 100644
+index 0000000..7a94b17
+--- /dev/null
++++ b/ci/verify-nokogiri-source-cache.rb
+@@ -0,0 +1,35 @@
++# frozen_string_literal: true
++
++require "yaml"
++require "digest"
++
++module NokogiriSourceCacheReceipt
++  def self.verify(cache_dir, gem_directory:, sha256:, ruby_platform:)
++    receipt = YAML.safe_load_file(File.join(cache_dir, "source-cache-use.yml"), aliases: false)
++    raise "Invalid cache receipt schema" unless receipt.fetch("schema") == 1
++    raise "Unexpected libiconv archive" unless receipt.fetch("archive") == "libiconv-1.18.tar.gz"
++    raise "Unexpected libiconv SHA-256" unless receipt.fetch("sha256") == sha256
++    unless receipt.fetch("gem_directory").casecmp?(gem_directory.tr("\\", "/"))
++      raise "Receipt is not from expected embedded Nokogiri"
++    end
++    raise "Unexpected build platform" unless receipt.fetch("ruby_platform") == ruby_platform
++    dependency = YAML.safe_load_file(File.join(gem_directory, "dependencies.yml"), aliases: false).fetch("libiconv")
++    unless dependency.fetch("version") == "1.18" && dependency.fetch("sha256") == sha256
++      raise "Installed Nokogiri dependency differs"
++    end
++    # Nokogiri removes ports/archives after compilation. The receipt attests to
++    # staging there; rehash the retained source cache, not the cleaned directory.
++    archive = File.join(cache_dir, receipt.fetch("archive"))
++    raise "Retained source archive differs" unless Digest::SHA256.file(archive).hexdigest == sha256
++    receipt
++  end
++end
++
++if $PROGRAM_NAME == __FILE__
++  receipt = NokogiriSourceCacheReceipt.verify(ENV.fetch("MSF_NOKOGIRI_SOURCE_CACHE"),
++    gem_directory: "C:/metasploit-framework/embedded/lib/ruby/gems/3.4.0/gems/nokogiri-1.19.4",
++    sha256: "3b08f5f4f9b4eb82f151a7040bfd6fe6c6fb922efe4b1659c66ea933276965e8",
++    ruby_platform: "x64-mingw-ucrt")
++  puts YAML.dump(receipt)
++  puts "NOKOGIRI_PRODUCTION_SOURCE_CACHE_RECEIPT_VERIFIED"
++end
+diff --git a/ci/verify-upgraded-dependency.rb b/ci/verify-upgraded-dependency.rb
+new file mode 100644
+index 0000000..381eacd
+--- /dev/null
++++ b/ci/verify-upgraded-dependency.rb
+@@ -0,0 +1,38 @@
++# frozen_string_literal: true
++
++require "zlib"
++require "stringio"
++require "fiddle"
++require "rbconfig"
++
++root = ARGV.fetch(0)
++expected_zlib = "1.4"
++raise "Unexpected zlib headers" unless Zlib::ZLIB_VERSION == expected_zlib
++raise "Unexpected zlib runtime" unless Zlib.zlib_version == expected_zlib
++input = (0..255).to_a.pack("C*") * 1024
++raise "Deflate round trip failed" unless Zlib::Inflate.inflate(Zlib::Deflate.deflate(input)) == input
++io = StringIO.new
++writer = Zlib::GzipWriter.new(io)
++writer.write(input)
++writer.finish
++raise "Gzip round trip failed" unless Zlib::GzipReader.new(StringIO.new(io.string)).read.b == input
++closure = Fiddle::Closure::BlockCaller.new(Fiddle::TYPE_INT, [Fiddle::TYPE_INT, Fiddle::TYPE_INT]) { |a, b| a + b }
++call = Fiddle::Function.new(closure, [Fiddle::TYPE_INT, Fiddle::TYPE_INT], Fiddle::TYPE_INT)
++raise "Fiddle call and closure failed" unless call.call(17, 25) == 42
++closure.free
++filename = RbConfig::CONFIG.fetch("host_os").include?("darwin") ? "libffi.8.dylib" : "libffi.so.8"
++handle = Fiddle::Handle.new(File.join(root, "embedded/lib", filename))
++version = Fiddle::Function.new(handle["ffi_get_version"], [], Fiddle::TYPE_VOIDP).call.to_s
++raise "Unexpected libffi runtime: #{version}" unless version == "3.8.0"
++extensions = $LOADED_FEATURES.grep(%r{/(?:fiddle|zlib)\.(?:bundle|so)$})
++raise "Missing native extension evidence" unless extensions.length == 2
++extensions.each do |extension|
++  command = RbConfig::CONFIG.fetch("host_os").include?("darwin") ? ["otool", "-L", extension] : ["ldd", extension]
++  output = IO.popen(command, &:read)
++  raise "Dependency inspection failed" unless $?.success?
++  library = File.basename(extension).start_with?("fiddle.") ? "libffi" : "libz"
++  puts output
++  resolved = output.gsub("@executable_path/../lib/", File.expand_path("../lib/", File.dirname(RbConfig.ruby)) + "/")
++  raise "Extension did not link packaged #{library}" unless resolved.include?(File.join(root, "embedded/lib", library))
++end
++puts "PACKAGED_COMPRESSION_AND_FIDDLE_PASSED zlib=#{Zlib.zlib_version}"
+diff --git a/ci/verify-windows-bootsnap.rb b/ci/verify-windows-bootsnap.rb
+new file mode 100644
+index 0000000..1f4628a
+--- /dev/null
++++ b/ci/verify-windows-bootsnap.rb
+@@ -0,0 +1,45 @@
++# frozen_string_literal: true
++
++require "tmpdir"
++require "rubygems"
++require "rbconfig"
++
++# Ignore the builder's gem environment when exercising the installed package.
++root = File.expand_path(ARGV.fetch(0))
++Gem.use_paths(File.join(root, "embedded/lib/ruby/gems", RbConfig::CONFIG.fetch("ruby_version")))
++require "bootsnap"
++require "bootsnap/compile_cache"
++
++version = Gem.loaded_specs.fetch("bootsnap").version
++raise "Bootsnap 1.26.1 or later is required" if version < Gem::Version.new("1.26.1")
++
++previous_external = Encoding.default_external
++previous_internal = Encoding.default_internal
++begin
++  Dir.mktmpdir("bootsnap-package") do |directory|
++    Bootsnap::CompileCache.setup(cache_dir: File.join(directory, "cache"), iseq: true, yaml: false)
++    fixtures = {
++      "utf8" => ["# encoding: UTF-8\n# frozen_string_literal: true\n'caf\u00e9'\n", Encoding::UTF_8],
++      "latin1" => ["# encoding: ISO-8859-1\n# frozen_string_literal: true\n'caf\xE9'\n".b, Encoding::ISO_8859_1]
++    }
++    fixtures.each do |name, (source, encoding)|
++      [nil, Encoding::UTF_8, Encoding::ASCII_8BIT, Encoding::ISO_8859_1].each_with_index do |internal, index|
++        path = File.join(directory, "#{name}-#{index}.rb")
++        File.binwrite(path, source)
++        Encoding.default_external = Encoding::ASCII_8BIT
++        Encoding.default_internal = internal
++        2.times do
++          result = Bootsnap::CompileCache::ISeq.fetch(path).eval
++          raise "Source encoding changed" unless result.encoding == encoding
++          raise "Source bytes changed" unless result.b == source.b.lines.last.strip[1...-1]
++          raise "Frozen string semantics changed" unless result.frozen?
++        end
++      end
++    end
++  end
++ensure
++  Encoding.default_external = previous_external
++  Encoding.default_internal = previous_internal
++end
++
++puts "WINDOWS_BOOTSNAP_ENCODING_PASSED version=#{version} ruby=#{RUBY_VERSION} evaluations=16"
+diff --git a/ci/verify-windows-database-query.rb b/ci/verify-windows-database-query.rb
+new file mode 100644
+index 0000000..a1e8aa1
+--- /dev/null
++++ b/ci/verify-windows-database-query.rb
+@@ -0,0 +1,26 @@
++# frozen_string_literal: true
++
++require "yaml"
++require "pg"
++
++configuration = YAML.safe_load_file(File.expand_path("~/.msf4/database.yml"), aliases: true).fetch("production")
++raise "Expected local TCP database" unless configuration.fetch("host") == "127.0.0.1"
++connection = nil
++begin
++  connection = PG.connect(
++    host: configuration.fetch("host"),
++    port: configuration.fetch("port", 5432),
++    dbname: configuration.fetch("database"),
++    user: configuration.fetch("username"),
++    password: configuration.fetch("password"),
++    connect_timeout: 10,
++  )
++  result = connection.exec("SELECT 1 AS value, current_database() AS database")
++  unless result.ntuples == 1 && result[0]["value"] == "1" &&
++      result[0]["database"] == configuration.fetch("database")
++    raise "Packaged PostgreSQL query returned an unexpected result"
++  end
++  puts "WINDOWS_PACKAGED_POSTGRESQL_QUERY_PASSED value=1 server_version=#{connection.server_version}"
++ensure
++  connection&.finish
++end
+diff --git a/config/patches/metasploit-framework/msfdb-recovery-private.patch b/config/patches/metasploit-framework/msfdb-recovery-private.patch
+new file mode 100644
+index 0000000..41960c7
+--- /dev/null
++++ b/config/patches/metasploit-framework/msfdb-recovery-private.patch
+@@ -0,0 +1,663 @@
++diff --git a/lib/msfdb_helpers/db_interface.rb b/lib/msfdb_helpers/db_interface.rb
++index 4ee19948ef..8bf277154d 100644
++--- a/lib/msfdb_helpers/db_interface.rb
+++++ b/lib/msfdb_helpers/db_interface.rb
++@@ -9,6 +9,18 @@ module MsfdbHelpers
++       raise NotImplementedError
++     end
++ 
+++    # Keep backend-specific initialization state until configuration and migrations finish.
+++    # @yield initialize the database, write configuration and run migrations
+++    # @return [void]
+++    def with_initialization
+++      yield
+++    end
+++
+++    # @return [Boolean] whether an earlier initialization needs to be completed
+++    def initialization_pending?
+++      false
+++    end
+++
++     def delete
++       raise NotImplementedError
++     end
++diff --git a/lib/msfdb_helpers/pg_ctl.rb b/lib/msfdb_helpers/pg_ctl.rb
++index 9f60e93f1d..0aa08f8d91 100644
++--- a/lib/msfdb_helpers/pg_ctl.rb
+++++ b/lib/msfdb_helpers/pg_ctl.rb
++@@ -12,10 +12,36 @@ module MsfdbHelpers
++       super(options)
++     end
++ 
+++    # @param msf_pass [String] password for the primary database user
+++    # @param msftest_pass [String] password for the test database user
+++    # @yield persist connection configuration before provisioning an owned cluster
+++    # @return [Boolean] whether the database was configured successfully
+++    # @raise [PG::ConnectionBad] if cluster initialization or startup fails
+++    # @raise [PG::Error] if user or database provisioning fails
++     def init(msf_pass, msftest_pass)
++-      puts "Creating database at #{@db}"
++-      Dir.mkdir(@db)
++-      run_cmd("initdb --auth-host=trust --auth-local=trust --username=postgres -E UTF8 #{@db.shellescape}")
+++      if initialization_pending?
+++        unless File.read(initialization_marker) == 'setup'
+++          raise PG::ConnectionBad, "PostgreSQL initialization did not finish at #{@db}; inspect the data before running msfdb reinit"
+++        end
+++
+++        # Only clusters created by an interrupted msfdb init are resumed. Stop
+++        # that server before changing its socket and authentication configuration.
+++        if running? && stop != 0
+++          raise PG::ConnectionBad, "Could not stop incomplete database at #{@db}; check #{@db}/log"
+++        end
+++      else
+++        puts "Creating database at #{@db}"
+++        Dir.mkdir(@db)
+++        # initdb requires an empty directory, so its progress marker lives beside it.
+++        File.write(initialization_marker, 'initdb', mode: 'w', perm: 0o600)
+++        unless run_cmd("initdb --auth-host=trust --auth-local=trust --username=postgres -E UTF8 #{@db.shellescape}") == 0
+++          raise PG::ConnectionBad, "Could not initialize PostgreSQL at #{@db}"
+++        end
+++
+++        File.write(initialization_marker, 'setup')
+++      end
+++
+++      yield if block_given?
++ 
++       File.open("#{@db}/postgresql.conf", 'a') do |f|
++         f.puts "port = #{@options[:db_port]}"
++@@ -32,15 +58,39 @@ module MsfdbHelpers
++       elsif test_executable_file("#{@db}")
++         @socket_directory = @db
++       else
++-        print_error("Attempt to create DB socket file at Temporary Directory and `~/.msf4/db` failed. Possibly because they are mounted with NOEXEC flags. Database initialization failed.")
+++        raise PG::ConnectionBad, "Could not create a database socket at #{Dir.tmpdir} or #{@db}"
++       end
++ 
++-      start
+++      # A timed-out pg_ctl can leave PostgreSQL starting in the background.
+++      # Install the intended authentication rules before it can accept clients.
+++      write_db_client_auth_config
+++      unless start_database
+++        raise PG::ConnectionBad, "PostgreSQL did not become ready at #{@db}; check #{@db}/log"
+++      end
++ 
++       create_db_users(msf_pass, msftest_pass)
+++      true
+++    end
++ 
++-      write_db_client_auth_config
++-      restart
+++    # Serialize initialization, including the caller's configuration and migrations.
+++    # A failed attempt remains distinguishable from an existing usable database.
+++    # @yield initialize the database, write configuration and run migrations
+++    # @return [void]
+++    # @raise [PG::ConnectionBad] if another initializer holds the cluster lock
+++    def with_initialization
+++      File.open("#{@db}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+++        unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+++          raise PG::ConnectionBad, "Database initialization already in progress at #{@db}"
+++        end
+++
+++        yield
+++        File.delete(initialization_marker) if initialization_pending?
+++      end
+++    end
+++
+++    # @return [Boolean] whether this cluster has an incomplete initialization marker
+++    def initialization_pending?
+++      File.file?(initialization_marker)
++     end
++ 
++     # Creates and attempts to execute a testfile in the specified directory,
++@@ -81,6 +131,7 @@ module MsfdbHelpers
++         if @options[:delete_existing_data]
++           puts "Deleting all data at #{@db}"
++           FileUtils.rm_rf(@db)
+++          File.delete(initialization_marker) if initialization_pending?
++         end
++ 
++         if @options[:delete_existing_data]
++@@ -91,37 +142,19 @@ module MsfdbHelpers
++       end
++     end
++ 
+++    # @return [Boolean] whether PostgreSQL started successfully or was already running
++     def start
++-      if status == DatabaseStatus::RUNNING
++-        puts "Database already started at #{@db}"
++-        return true
++-      end
++-
++-      print "Starting database at #{@db}..."
++-      pg_ctl_spawn_cmd = "pg_ctl -o \"-p #{@options[:db_port]}\" -D #{@db.shellescape} -l #{@db.shellescape}/log start &"
++-      puts "spawn_cmd: #{pg_ctl_spawn_cmd}" if @options[:debug]
++-      pg_ctl_pid = Process.spawn(pg_ctl_spawn_cmd)
++-      Process.detach(pg_ctl_pid)
++-      is_database_running = retry_until_truthy(timeout: 60) do
++-        status == DatabaseStatus::RUNNING
+++      if initialization_pending?
+++        print_error('Database initialization is incomplete; run msfdb init before starting it')
+++        return false
++       end
++ 
++-      if is_database_running
++-        puts 'success'.green.bold.to_s
++-        true
++-      else
++-        begin
++-          Process.kill(:KILL, pg_ctl_pid)
++-        rescue => e
++-          puts "Failed to kill pg_ctl_pid=#{pg_ctl_pid} - #{e.class} #{e.message}" if @options[:debug]
++-        end
++-        puts 'failed'.red.bold.to_s
++-        false
++-      end
+++      start_database
++     end
++ 
+++    # @return [Integer, nil] pg_ctl's exit status, or nil if the server is not running
++     def stop
++-      if status == DatabaseStatus::RUNNING
+++      if running?
++         puts "Stopping database at #{@db}"
++         run_cmd("pg_ctl -o \"-p #{@options[:db_port]}\" -D #{@db.shellescape} stop")
++       else
++@@ -138,9 +171,14 @@ module MsfdbHelpers
++       Dir.exist?(@db)
++     end
++ 
+++    # @return [Integer] the matching DatabaseStatus constant
++     def status
+++      return DatabaseStatus::NEEDS_INIT if initialization_pending?
+++
++       if exists?
++-        if run_cmd("pg_ctl -o \"-p #{@options[:db_port]}\" -D #{@db.shellescape} status") == 0
+++        return DatabaseStatus::NEEDS_INIT unless File.file?(File.join(@db, 'PG_VERSION'))
+++
+++        if running?
++           DatabaseStatus::RUNNING
++         else
++           DatabaseStatus::INACTIVE
++@@ -150,19 +188,29 @@ module MsfdbHelpers
++       end
++     end
++ 
+++    # @param msf_pass [String] password for the primary database user
+++    # @param msftest_pass [String] password for the test database user
+++    # @return [void]
+++    # @raise [PG::Error] if user or database provisioning fails
++     def create_db_users(msf_pass, msftest_pass)
++       puts 'Creating database users'
++-      run_psql("create user #{@options[:msf_db_user].shellescape} with password '#{msf_pass}'", @socket_directory)
++-      run_psql("create user #{@options[:msftest_db_user].shellescape} with password '#{msftest_pass}'", @socket_directory)
++-      run_psql("alter role #{@options[:msf_db_user].shellescape} createdb", @socket_directory)
++-      run_psql("alter role #{@options[:msftest_db_user].shellescape} createdb", @socket_directory)
++-      run_psql("alter role #{@options[:msf_db_user].shellescape} with password '#{msf_pass}'", @socket_directory)
++-      run_psql("alter role #{@options[:msftest_db_user].shellescape} with password '#{msftest_pass}'", @socket_directory)
+++      PG.connect(host: @socket_directory, dbname: 'postgres', port: @options[:db_port], user: 'postgres') do |conn|
+++        [[@options[:msf_db_user], msf_pass], [@options[:msftest_db_user], msftest_pass]].each do |user, password|
+++          unless conn.exec_params('SELECT 1 FROM pg_roles WHERE rolname = $1', [user]).any?
+++            conn.exec("CREATE ROLE #{conn.quote_ident(user)}")
+++          end
+++          conn.exec("ALTER ROLE #{conn.quote_ident(user)} LOGIN CREATEDB PASSWORD #{conn.escape_literal(password)}")
+++        end
+++      end
++ 
++-      conn = PG.connect(host: @options[:db_host], dbname: 'postgres', port: @options[:db_port], user: @options[:msf_db_user], password: msf_pass)
++-      conn.exec("CREATE DATABASE #{@options[:msf_db_name]}")
++-      conn.exec("CREATE DATABASE #{@options[:msftest_db_name]}")
++-      conn.finish
+++      # Use the application role so it owns both databases, including on retry.
+++      PG.connect(host: @socket_directory, dbname: 'postgres', port: @options[:db_port], user: @options[:msf_db_user], password: msf_pass) do |conn|
+++        [@options[:msf_db_name], @options[:msftest_db_name]].each do |database|
+++          unless conn.exec_params('SELECT 1 FROM pg_database WHERE datname = $1', [database]).any?
+++            conn.exec("CREATE DATABASE #{conn.quote_ident(database)}")
+++          end
+++        end
+++      end
++     end
++ 
++     def write_db_client_auth_config
++@@ -174,32 +222,38 @@ module MsfdbHelpers
++       %w[psql pg_ctl initdb createdb]
++     end
++ 
++-    protected
++-
++-    def retry_until_truthy(timeout:)
++-      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC, :second)
++-      ending_time = start_time + timeout
++-      retry_count = 0
++-      while Process.clock_gettime(Process::CLOCK_MONOTONIC, :second) < ending_time
++-        result = yield
++-        return result if result
++-
++-        retry_count += 1
++-        remaining_time_budget = ending_time - Process.clock_gettime(Process::CLOCK_MONOTONIC, :second)
++-        break if remaining_time_budget <= 0
+++    private
++ 
++-        delay = 2**retry_count
++-        if delay >= remaining_time_budget
++-          delay = remaining_time_budget
++-          puts("Final attempt. Sleeping for the remaining #{delay} seconds out of total timeout #{timeout}") if @options[:debug]
++-        else
++-          puts("Sleeping for #{delay} seconds before attempting again") if @options[:debug]
++-        end
+++    def start_database
+++      if running?
+++        puts "Database already started at #{@db}"
+++        return true
+++      end
++ 
++-        sleep delay
+++      print "Starting database at #{@db}..."
+++      # Wait for readiness, not just a live postmaster. Avoid captured pipes:
+++      # PostgreSQL can inherit them on Windows and keep capture2e waiting for EOF.
+++      pg_ctl_spawn_cmd = ['pg_ctl', '-o', "-p #{@options[:db_port]}", '-D', @db, '-l', "#{@db}/log", '-w', '-t', '60', 'start']
+++      puts "spawn_cmd: #{pg_ctl_spawn_cmd.shelljoin}" if @options[:debug]
+++      pg_ctl_pid = Process.spawn(*pg_ctl_spawn_cmd)
+++      startup_status = Process.detach(pg_ctl_pid).value
+++
+++      if startup_status.success?
+++        puts 'success'.green.bold
+++        true
+++      else
+++        puts 'failed'.red.bold
+++        false
++       end
+++    end
++ 
++-      nil
+++    def initialization_marker
+++      "#{@db}.initializing"
++     end
+++
+++    def running?
+++      run_cmd("pg_ctl -o \"-p #{@options[:db_port]}\" -D #{@db.shellescape} status") == 0
+++    end
+++
++   end
++ end
++diff --git a/msfdb b/msfdb
++index 2f8fb860c0..e77240cc93 100755
++--- a/msfdb
+++++ b/msfdb
++@@ -177,40 +177,54 @@ def restart_db
++ end
++ 
++ def init_db
++-  case @db_driver.status
++-  when DatabaseStatus::RUNNING
++-    puts 'Existing database running'
++-    return
++-  when DatabaseStatus::INACTIVE
++-    puts 'Existing database found, attempting to start it'
++-    @db_driver.start
++-    return
++-  end
++-
++-  if @db_driver.exists? && !@options[:delete_existing_data]
++-    if !load_db_config
++-      puts 'Failed to load existing database config. Please reinit and overwrite the file.'
+++  @db_driver.with_initialization do
+++    case @db_driver.status
+++    when DatabaseStatus::RUNNING
+++      puts 'Existing database running'
+++      return
+++    when DatabaseStatus::INACTIVE
+++      puts 'Existing database found, attempting to start it'
+++      @db_driver.start
++       return
++     end
++-  end
++ 
++-  # Generate new database passwords if not already assigned
++-  @msf_pass ||= pw_gen
++-  @msftest_pass ||= pw_gen
+++    if @db_driver.initialization_pending?
+++      raise PG::Error, 'Could not load the incomplete database configuration; restore it or inspect the data before running msfdb reinit' unless load_db_config
+++    elsif @db_driver.exists? && !@options[:delete_existing_data]
+++      if !load_db_config
+++        puts 'Failed to load existing database config. Please reinit and overwrite the file.'
+++        return
+++      end
+++    end
++ 
++-  @db_driver.init(@msf_pass, @msftest_pass)
++-  write_db_config
+++    # Generate new database passwords if not already assigned
+++    @msf_pass ||= pw_gen
+++    @msftest_pass ||= pw_gen
++ 
++-  puts 'Creating initial database schema'
++-  Dir.chdir(@framework) do
++-    @db_driver.run_cmd('bundle exec rake db:migrate')
+++    config_written = false
+++    @db_driver.init(@msf_pass, @msftest_pass) do
+++      # PgCtl persists credentials after claiming the cluster, before provisioning.
+++      write_db_config
+++      config_written = true
+++    end
+++    write_db_config unless config_written
+++
+++    puts 'Creating initial database schema'
+++    Dir.chdir(@framework) do
+++      # This one-off task needs no web-session key or packaged schema dump.
+++      migration_env = { 'SCHEMA' => File::NULL }
+++      migration_env['SECRET_KEY_BASE'] = SecureRandom.hex(64) unless ENV['SECRET_KEY_BASE']
+++      unless @db_driver.run_cmd('bundle exec rake db:migrate', env: migration_env) == 0
+++        raise PG::Error, 'Database schema migration failed'
+++      end
+++    end
++   end
++-  puts 'Database initialization successful'.green.bold.to_s
+++  puts 'Database initialization successful'.green.bold
++ end
++ 
++ def load_db_config
++   if File.file?(@db_conf)
++-    config = YAML.load(File.read(@db_conf))
+++    config = load_db_config_yaml
++ 
++     production = config['production']
++     if production.nil?
++@@ -224,6 +238,16 @@ def load_db_config
++       return false
++     end
++ 
+++    valid_accounts = [production, test].all? do |section|
+++      section.is_a?(Hash) && %w[database username password].all? do |key|
+++        section[key].is_a?(String) && !section[key].empty?
+++      end
+++    end
+++    unless valid_accounts && production['port'].to_s.match?(/\A[0-9]+\z/) && production['port'].to_i.between?(1, 65_535)
+++      puts "Incomplete database connection settings in #{@db_conf}."
+++      return false
+++    end
+++
++     # get values for development and production
++     @options[:msf_db_name] = production['database']
++     @options[:msf_db_user] = production['username']
++diff --git a/spec/lib/msfdb_helpers/pg_ctl_spec.rb b/spec/lib/msfdb_helpers/pg_ctl_spec.rb
++new file mode 100644
++index 0000000000..7b2bf3bb10
++--- /dev/null
+++++ b/spec/lib/msfdb_helpers/pg_ctl_spec.rb
++@@ -0,0 +1,276 @@
+++require 'spec_helper'
+++require 'fileutils'
+++require 'tmpdir'
+++require 'shellwords'
+++require 'timeout'
+++require 'pg'
+++require 'msfdb_helpers/pg_ctl'
+++
+++RSpec.describe MsfdbHelpers::PgCtl do
+++  subject(:driver) do
+++    described_class.new(db_path: db_path, options: options, localconf: '/unused', db_conf: '/unused/database.yml')
+++  end
+++
+++  let(:db_path) { '/database path/with spaces' }
+++  let(:options) { { db_port: 5433, debug: false } }
+++  let(:startup_status) { instance_double(Process::Status, success?: true) }
+++  let(:waiter) { instance_double(Process::Waiter, value: startup_status) }
+++
+++  before do
+++    # The command-line entry point defines these states, outside the helper.
+++    stub_const('DatabaseStatus', Class.new)
+++    stub_const('DatabaseStatus::RUNNING', 0)
+++    stub_const('DatabaseStatus::INACTIVE', 1)
+++    stub_const('DatabaseStatus::NOT_FOUND', 2)
+++    stub_const('DatabaseStatus::NEEDS_INIT', 3)
+++    # msfdb also supplies String color helpers; they are presentation only.
+++    without_partial_double_verification do
+++      %i[green red bold].each do |method|
+++        allow_any_instance_of(String).to receive(method) { |string| string }
+++      end
+++    end
+++  end
+++
+++  describe '#start' do
+++    before do
+++      allow(driver).to receive(:running?).and_return(false)
+++      allow(Process).to receive(:spawn).and_return(1234)
+++      allow(Process).to receive(:detach).with(1234).and_return(waiter)
+++    end
+++
+++    it 'passes bounded, literal startup options' do
+++      expect(Process).to receive(:spawn).with(
+++        'pg_ctl', '-o', '-p 5433', '-D', db_path, '-l', "#{db_path}/log", '-w', '-t', '60', 'start'
+++      ).ordered.and_return(1234)
+++      expect(waiter).to receive(:value).ordered.and_return(startup_status)
+++      expect(driver.start).to be true
+++    end
+++
+++    it 'avoids captured output pipes' do
+++      expect(driver).not_to receive(:run_cmd)
+++      expect(driver.start).to be true
+++    end
+++
+++    it 'waits for startup completion' do
+++      waiting = Queue.new
+++      ready = Queue.new
+++      allow(waiter).to receive(:value) do
+++        waiting << true
+++        ready.pop
+++        startup_status
+++      end
+++
+++      startup = Thread.new { driver.start }
+++      begin
+++        Timeout.timeout(5) { waiting.pop }
+++        expect(startup).to be_alive
+++        ready << true
+++        expect(Timeout.timeout(5) { startup.value }).to be true
+++      ensure
+++        ready << true
+++        startup.kill if startup.alive?
+++        startup.join
+++      end
+++    end
+++
+++    context 'when the postmaster is running but startup has not succeeded' do
+++      let(:startup_status) { instance_double(Process::Status, success?: false) }
+++
+++      it 'reports the startup failure' do
+++        expect(driver.start).to be false
+++        expect(waiter).to have_received(:value)
+++        expect(driver).to have_received(:running?).once
+++      end
+++    end
+++
+++    context 'when the database was already running' do
+++      before do
+++        allow(driver).to receive(:running?).and_return(true)
+++      end
+++
+++      it 'does not launch another server' do
+++        expect(Process).not_to receive(:spawn)
+++        expect(driver.start).to be true
+++      end
+++    end
+++  end
+++
+++  describe '#init' do
+++    around do |example|
+++      Dir.mktmpdir('pg-ctl-spec') do |directory|
+++        @temporary_directory = directory
+++        example.run
+++      end
+++    end
+++
+++    let(:db_path) { File.join(@temporary_directory, 'data') }
+++
+++    before do
+++      allow(driver).to receive(:run_cmd).and_return(0)
+++      allow(driver).to receive(:test_executable_file).and_return(true)
+++      allow(driver).to receive(:create_db_users)
+++      allow(driver).to receive(:write_db_client_auth_config)
+++    end
+++
+++    it 'aborts setup when startup fails' do
+++      allow(driver).to receive(:start_database).and_return(false)
+++      expect(driver).not_to receive(:create_db_users)
+++      expect(driver).to receive(:write_db_client_auth_config)
+++      expect(driver).not_to receive(:restart)
+++
+++      expect { driver.init('test-password', 'test-password') }.to raise_error(PG::ConnectionBad, /did not become ready/)
+++    end
+++
+++    it 'starts before configuring users' do
+++      expect(driver).to receive(:write_db_client_auth_config).ordered
+++      expect(driver).to receive(:start_database).ordered.and_return(true)
+++      expect(driver).to receive(:create_db_users).with('test-password', 'test-password').ordered
+++      expect(driver).not_to receive(:restart)
+++
+++      expect(driver.init('test-password', 'test-password')).to be true
+++    end
+++
+++    it 'leaves failed startup distinguishable from an existing database' do
+++      allow(driver).to receive(:start_database).and_return(false)
+++      expect { driver.init('password', 'password') }.to raise_error(PG::ConnectionBad)
+++      expect(driver.status).to eq(DatabaseStatus::NEEDS_INIT)
+++    end
+++
+++    it 'does not overwrite an unmarked existing data directory' do
+++      Dir.mkdir(db_path)
+++      File.write(File.join(db_path, 'existing-data'), 'preserve')
+++      expect(driver).not_to receive(:run_cmd)
+++      expect { driver.init('password', 'password') { raise 'must not write config' } }.to raise_error(Errno::EEXIST)
+++      expect(File.read(File.join(db_path, 'existing-data'))).to eq('preserve')
+++    end
+++
+++    it 'yields configuration only after claiming the cluster and before provisioning' do
+++      allow(driver).to receive(:start_database).and_return(true)
+++      configured = false
+++      expect(driver).to receive(:create_db_users) { expect(configured).to be true }
+++      driver.init('password', 'password') do
+++        expect(driver.initialization_pending?).to be true
+++        configured = true
+++      end
+++    end
+++
+++    it 'does not start a cluster after initdb fails' do
+++      allow(driver).to receive(:run_cmd).and_return(1)
+++      expect(driver).not_to receive(:start_database)
+++      expect { driver.init('password', 'password') }.to raise_error(PG::ConnectionBad, /Could not initialize/)
+++      expect(driver.status).to eq(DatabaseStatus::NEEDS_INIT)
+++      expect { driver.init('password', 'password') }.to raise_error(PG::ConnectionBad, /did not finish/)
+++    end
+++
+++    context 'with an interrupted initialization' do
+++      before do
+++        Dir.mkdir(db_path)
+++        File.write("#{db_path}.initializing", 'setup')
+++      end
+++
+++      it 'does not allow start or restart to bypass initialization' do
+++        allow(driver).to receive(:stop)
+++        without_partial_double_verification do
+++          allow(driver).to receive(:print_error)
+++        end
+++        expect(driver).not_to receive(:start_database)
+++        expect(driver.start).to be false
+++        expect(driver.restart).to be false
+++      end
+++
+++      it 'stops the incomplete server before replacing its configuration' do
+++        allow(driver).to receive(:running?).and_return(true)
+++        expect(driver).to receive(:stop).ordered.and_return(0)
+++        expect(driver).to receive(:write_db_client_auth_config).ordered
+++        expect(driver).to receive(:start_database).ordered.and_return(true)
+++        expect(driver).to receive(:create_db_users).ordered
+++        driver.init('password', 'password')
+++      end
+++
+++      it 'preserves the marker when the incomplete server cannot stop' do
+++        allow(driver).to receive(:running?).and_return(true)
+++        allow(driver).to receive(:stop).and_return(1)
+++        expect(driver).not_to receive(:write_db_client_auth_config)
+++        expect { driver.init('password', 'password') }.to raise_error(PG::ConnectionBad, /Could not stop/)
+++        expect(driver.initialization_pending?).to be true
+++      end
+++
+++      it 'resumes a stopped incomplete cluster without running initdb again' do
+++        allow(driver).to receive(:running?).and_return(false)
+++        allow(driver).to receive(:start_database).and_return(true)
+++        expect(driver).not_to receive(:run_cmd)
+++        expect(driver.init('password', 'password')).to be true
+++      end
+++    end
+++
+++    describe '#with_initialization' do
+++      before do
+++        Dir.mkdir(db_path)
+++        File.write("#{db_path}.initializing", 'setup')
+++      end
+++
+++      it 'keeps the marker until the caller finishes configuration and migrations' do
+++        driver.with_initialization do
+++          expect(driver.initialization_pending?).to be true
+++        end
+++        expect(driver.initialization_pending?).to be false
+++      end
+++
+++      it 'preserves the marker on a caller failure and releases the lock for retry' do
+++        expect { driver.with_initialization { raise PG::Error, 'migration failed' } }.to raise_error(PG::Error)
+++        expect(driver.initialization_pending?).to be true
+++        driver.with_initialization { nil }
+++        expect(driver.initialization_pending?).to be false
+++      end
+++
+++      it 'rejects concurrent initialization without clearing the marker' do
+++        other_driver = described_class.new(db_path: db_path, options: options, localconf: '/unused', db_conf: '/unused/database.yml')
+++        driver.with_initialization do
+++          expect { other_driver.with_initialization { raise 'must not enter' } }.to raise_error(PG::ConnectionBad, /already in progress/)
+++          expect(driver.initialization_pending?).to be true
+++        end
+++      end
+++    end
+++  end
+++
+++  describe '#create_db_users' do
+++    let(:options) do
+++      { db_port: 5433, msf_db_user: 'msf', msftest_db_user: 'msftest', msf_db_name: 'msf', msftest_db_name: 'msftest' }
+++    end
+++    let(:admin) { instance_double(PG::Connection) }
+++    let(:application) { instance_double(PG::Connection) }
+++
+++    before do
+++      allow(PG).to receive(:connect).with(host: db_path, dbname: 'postgres', port: 5433, user: 'postgres').and_yield(admin)
+++      allow(PG).to receive(:connect).with(host: db_path, dbname: 'postgres', port: 5433, user: 'msf', password: 'new-password').and_yield(application)
+++      [admin, application].each do |connection|
+++        allow(connection).to receive(:quote_ident) { |value| PG::Connection.quote_ident(value) }
+++        allow(connection).to receive(:exec)
+++      end
+++      allow(admin).to receive(:escape_literal).with('new-password').and_return("'new-password'")
+++      allow(admin).to receive(:exec_params).and_return([])
+++      allow(application).to receive(:exec_params).and_return([])
+++    end
+++
+++    it 'creates both databases as the application role' do
+++      expect(application).to receive(:exec).with('CREATE DATABASE "msf"')
+++      expect(application).to receive(:exec).with('CREATE DATABASE "msftest"')
+++      driver.create_db_users('new-password', 'new-password')
+++    end
+++
+++    it 'updates passwords and preserves databases already created by an interrupted attempt' do
+++      allow(admin).to receive(:exec_params).and_return([{ 'exists' => '1' }])
+++      allow(application).to receive(:exec_params).and_return([{ 'exists' => '1' }])
+++      expect(admin).not_to receive(:exec).with(/CREATE ROLE/)
+++      expect(admin).to receive(:exec).with('ALTER ROLE "msf" LOGIN CREATEDB PASSWORD \'new-password\'')
+++      expect(admin).to receive(:exec).with('ALTER ROLE "msftest" LOGIN CREATEDB PASSWORD \'new-password\'')
+++      expect(application).not_to receive(:exec)
+++      driver.create_db_users('new-password', 'new-password')
+++    end
+++
+++    it 'propagates provisioning failures instead of reporting success' do
+++      allow(admin).to receive(:exec).and_raise(PG::Error, 'role creation failed')
+++      expect { driver.create_db_users('new-password', 'new-password') }.to raise_error(PG::Error, /role creation failed/)
+++    end
+++  end
+++end
+diff --git a/config/patches/zlib/zlib-1.4-windows-relocate.patch b/config/patches/zlib/zlib-1.4-windows-relocate.patch
+new file mode 100644
+index 0000000..1c5d629
+--- /dev/null
++++ b/config/patches/zlib/zlib-1.4-windows-relocate.patch
+@@ -0,0 +1,20 @@
++--- zlib-1.4/win32/Makefile.gcc.orig
+++++ zlib-1.4/win32/Makefile.gcc
++@@ -52,6 +52,8 @@
++ RC = $(PREFIX)windres
++ RCFLAGS =
++ 
+++IMAGE_BASE = 0x63300000
+++
++ STRIP = $(PREFIX)strip
++ 
++ CP = cp -fp
++@@ -88,7 +90,7 @@
++ $(IMPLIB): $(SHAREDLIB)
++ 
++ $(SHAREDLIB): win32/zlib.def $(OBJS) $(OBJA) zlibrc.o
++-	$(CC) -shared -static-libgcc -Wl,--out-implib,$(IMPLIB) $(LDFLAGS) \
+++	$(CC) -shared -static-libgcc -Wl,--out-implib,$(IMPLIB),--image-base,$(IMAGE_BASE) $(LDFLAGS) \
++ 	-o $@ win32/zlib.def $(OBJS) $(OBJA) zlibrc.o
++ 	$(STRIP) $@
++ 
+diff --git a/config/software/libffi.rb b/config/software/libffi.rb
+index e5adadf..445427c 100644
+--- a/config/software/libffi.rb
++++ b/config/software/libffi.rb
+@@ -15,7 +15,7 @@
+ #
+ 
+ name "libffi"
+-default_version "3.4.2"
++default_version "3.8.0"
+ 
+ license "MIT"
+ license_file "LICENSE"
+@@ -23,6 +23,7 @@ skip_transitive_dependency_licensing true
+ 
+ # version_list: url=https://github.com/libffi/libffi/releases filter=*.tar.gz
+ 
++version("3.8.0") { source sha256: "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4" }
+ version("3.4.2") { source sha256: "540fb721619a6aba3bdeef7d940d8e9e0e6d2c193595bc243241b77ff9e93620" }
+ version("3.3")   { source sha256: "72fba7922703ddfa7a028d513ac15a85c8d54c8d67f55fa5a4802885dc652056" }
+ 
+diff --git a/config/software/liblzma.rb b/config/software/liblzma.rb
+index f2e9adb..30ecbde 100644
+--- a/config/software/liblzma.rb
++++ b/config/software/liblzma.rb
+@@ -42,7 +42,8 @@ build do
+     "--disable-doc",
+     "--disable-scripts",
+   ]
+-  config_command << "--disable-nls" if windows?
++  # Do not let the bundled XZ tools depend on the builder's Homebrew gettext.
++  config_command << "--disable-nls" if windows? || mac_os_x?
+ 
+   configure(*config_command, env: env)
+ 
+diff --git a/config/software/metasploit-framework.rb b/config/software/metasploit-framework.rb
+index b7d2367..39e6443 100644
+--- a/config/software/metasploit-framework.rb
++++ b/config/software/metasploit-framework.rb
+@@ -16,7 +16,7 @@ elsif has_windows_metasploit_framework_repo?
+   source path: "../metasploit-framework"
+ else
+   source git: "https://github.com/rapid7/metasploit-framework.git"
+-  default_version "master"
++  default_version "15fd116f30d5f652e9153f18d0965aa2d5ec3841"
+ end
+ 
+ dependency "cacerts"
+@@ -33,7 +33,7 @@ end
+ 
+ ruby_abi_version = "3.4.0"
+ # This depends on extra system libraries on OS X
+-whitelist_file "#{install_dir}//embedded/framework/data/isight.bundle"
++whitelist_file "#{install_dir}/+embedded/framework/data/isight.bundle"
+ 
+ # Files in this path are currently attached to exploits and do not need to pass system-specific omnibus health checks
+ whitelist_file "#{install_dir}/embedded/framework/data/exploits/.*"
+@@ -43,7 +43,7 @@ whitelist_file "#{install_dir}//embedded/framework/data/exploits/.*"
+ whitelist_file "#{install_dir}/embedded/lib/ruby/gems/#{ruby_abi_version}/gems/metasploit-payloads.*"
+ 
+ # Also whitelist mettle
+-whitelist_file "#{install_dir}//embedded/lib/ruby/gems/#{ruby_abi_version}/gems/metasploit_payloads.*"
++whitelist_file "#{install_dir}/+embedded/lib/ruby/gems/#{ruby_abi_version}/gems/metasploit_payloads.*"
+ 
+ # Also whitelist sqlite deps too as libz is provided just not first on path
+ whitelist_file "#{install_dir}/embedded/lib/ruby/gems/#{ruby_abi_version}/gems/sqlite3-.*"
+@@ -67,6 +67,8 @@ build do
+       }
+       # Remove problematic dependencies for Windows; Fiddle will need to be re-added in a future build for Ruby 3.3 support
+       if windows?
++        # Bootsnap 1.26.1 preserves source bytes under Framework's binary encoding.
++        replacements["spec.add_runtime_dependency 'bootsnap'"] = "spec.add_runtime_dependency 'bootsnap', '>= 1.26.1'"
+         skipped_dependencies += [
+           'ffi (< 1.17.0)',
+           'ffi (1.16.3)',
+@@ -108,7 +110,19 @@ build do
+       File.open(file_path, 'wb') { |f| f.puts(new_content) }
+     end
+   end
++  # Private validation of the unchanged PostgreSQL candidate on current master.
++  patch source: 'msfdb-recovery-private.patch', plevel: 1, env: patch_env
+   copy "#{project_dir}", "#{install_dir}/embedded/framework"
++  block 'Verify PostgreSQL readiness correction' do
++    require 'digest'
++    require 'json'
++    manifest = JSON.parse(File.read(File.join(Omnibus::Config.project_root, 'ci/database-recovery-sources.json')))
++    manifest.fetch('files').each do |relative_path, expected|
++      path = File.join(install_dir, 'embedded/framework', relative_path)
++      raise "PostgreSQL recovery source changed: #{relative_path}" unless Digest::SHA256.file(path).hexdigest == expected
++    end
++    puts "BUILT_POSTGRESQL_RECOVERY_VERIFIED framework=#{manifest.fetch('framework_commit')} migration_candidate=#{manifest.fetch('migration_candidate_commit')}"
++  end
+   major, minor, patch = Omnibus::BuildVersion.semver.split('.')
+ 
+   erb source: 'version.yml.erb',
+@@ -151,6 +165,11 @@ build do
+   # native extension compilation (Error 71: EEXIST).
+   bundle_env['MAKE'] = mac_os_x? ? 'make' : 'make -j4'
+   bundle_env['BUNDLE_FORCE_RUBY_PLATFORM'] = 'true'
++  # Omnibus clears inherited Ruby options. Pass the build-only source cache
++  # explicitly when Windows CI opts in; it is not installed in the package.
++  if windows? && ENV['MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD']
++    bundle_env['RUBYOPT'] = "-r#{ENV.fetch('MSF_NOKOGIRI_SOURCE_CACHE_PRELOAD')}"
++  end
+   bundle "install --jobs=4 --verbose", env: bundle_env
+ 
+   if windows?
+diff --git a/config/software/zlib.rb b/config/software/zlib.rb
+index 9b5f5cd..ef680ef 100644
+--- a/config/software/zlib.rb
++++ b/config/software/zlib.rb
+@@ -15,7 +15,9 @@
+ #
+ 
+ name "zlib"
+-default_version "1.2.11"
++default_version "1.4"
++
++version("1.4") { source sha256: "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584" }
+ 
+ version "1.2.11" do
+   source md5: "1c9f62f0778697a09d36121ead88e08e"
+@@ -27,7 +29,7 @@ version "1.2.6" do
+   source md5: "618e944d7c7cd6521551e30b32322f4a"
+ end
+ 
+-source url: "http://downloads.sourceforge.net/project/libpng/zlib/#{version}/zlib-#{version}.tar.gz"
++source url: "https://zlib.net/fossils/zlib-#{version}.tar.gz"
+ 
+ license "Zlib"
+ license_file "README"
+@@ -39,7 +41,11 @@ build do
+   if windows?
+     env = with_standard_compiler_flags(with_embedded_path)
+ 
+-    patch source: "zlib-windows-relocate.patch", env: env
++    if version.satisfies?(">= 1.4")
++      patch source: "zlib-1.4-windows-relocate.patch", env: env
++    else
++      patch source: "zlib-windows-relocate.patch", env: env
++    end
+ 
+     # We can't use the top-level Makefile. Instead, the developers have made
+     # an organic, artisanal, hand-crafted Makefile.gcc for us which takes a few
+diff --git a/config/templates/metasploit-framework-wrappers/msfupdate.erb b/config/templates/metasploit-framework-wrappers/msfupdate.erb
+index b0a0e00..11686d3 100755
+--- a/config/templates/metasploit-framework-wrappers/msfupdate.erb
++++ b/config/templates/metasploit-framework-wrappers/msfupdate.erb
+@@ -110,25 +110,90 @@ install_suse() {
+   zypper install -y metasploit-framework
+ }
+ 
+-install_pkg()
++macos_update_architecture()
+ {
+-  (
+-    cd ~/Downloads
+-
+-    echo "Downloading package..."
+-    curl -O "$DOWNLOAD_URI/osx/metasploitframework-latest.pkg"
++  MSF_INSTALL_ROOT=$1
++  # uname reports x86_64 when invoked through Rosetta. Query the hardware so
++  # fresh installs and universal runtimes select the native architecture.
++  if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
++    MSF_NATIVE_ARCH=arm64
++  else
++    MSF_NATIVE_ARCH=$(uname -m)
++  fi
++  case "$MSF_NATIVE_ARCH" in
++    arm64|x86_64) ;;
++    *) echo "Unsupported macOS architecture: $MSF_NATIVE_ARCH" >&2; return 1 ;;
++  esac
+ 
+-    echo "Checking signature..."
++  MSF_INSTALLED_RUBY="$MSF_INSTALL_ROOT/embedded/bin/ruby"
++  if [ -e "$MSF_INSTALLED_RUBY" ] || [ -L "$MSF_INSTALLED_RUBY" ]; then
++    # lipo is a developer-tool shim on a stock Mac and can open an Xcode
++    # installation prompt. file ships with macOS and inspects every slice
++    # without executing Ruby (which could itself require Rosetta).
++    MSF_RUBY_DESCRIPTION=$(LC_ALL=C file -bL "$MSF_INSTALLED_RUBY") || return 1
++    MSF_RUBY_ARCHS=$(printf '%s\n' "$MSF_RUBY_DESCRIPTION" |
++      sed -nE 's/^.*Mach-O 64-bit executable (arm64|x86_64)$/\1/p' | tr '\n' ' ')
++    case " $MSF_RUBY_ARCHS " in
++      *" $MSF_NATIVE_ARCH "*) echo "$MSF_NATIVE_ARCH" ;;
++      *" arm64 "*) echo arm64 ;;
++      *" x86_64 "*) echo x86_64 ;;
++      *) echo "Unsupported installed Ruby architecture: $MSF_RUBY_ARCHS" >&2; return 1 ;;
++    esac
++  else
++    echo "$MSF_NATIVE_ARCH"
++  fi
++}
+ 
+-    if pkgutil --check-signature metasploitframework-latest.pkg; then
+-      echo "Installing package..."
+-      installer -pkg metasploitframework-latest.pkg -target /
++install_pkg()
++(
++  MSF_EXPECTED_ARCH=$(macos_update_architecture "${1:-/opt/metasploit-framework}") || exit 1
++  # sudo -E may preserve a user-owned TMPDIR. Use macOS's root-owned sticky
++  # temporary directory so another user cannot replace the verified package.
++  MSF_PKG_TMP=$(mktemp -d /private/tmp/msfupdate.XXXXXXXX) || exit 1
++  MSF_CURL_PID=
++  cleanup_pkg_update()
++  {
++    if [ -n "$MSF_CURL_PID" ]; then
++      kill "$MSF_CURL_PID" 2>/dev/null || :
++      wait "$MSF_CURL_PID" 2>/dev/null || :
+     fi
++    rm -rf "$MSF_PKG_TMP"
++  }
++  trap cleanup_pkg_update 0
++  trap 'exit 129' HUP
++  trap 'exit 130' INT
++  trap 'exit 143' TERM
++  MSF_PACKAGE="$MSF_PKG_TMP/metasploitframework-latest.pkg"
+ 
+-    echo "Cleaning up..."
+-    rm -fv metasploitframework-latest.pkg
+-  )
+-}
++  echo "Downloading package..."
++  curl --fail --show-error --location --connect-timeout 30 --max-time 600 \
++    --proto '=https' --proto-redir '=https' \
++    --output "$MSF_PACKAGE" "$DOWNLOAD_URI/osx/metasploitframework-latest.pkg" &
++  MSF_CURL_PID=$!
++  wait "$MSF_CURL_PID"
++  MSF_CURL_STATUS=$?
++  MSF_CURL_PID=
++  [ "$MSF_CURL_STATUS" -eq 0 ] || exit "$MSF_CURL_STATUS"
++
++  echo "Checking signature..."
++  pkgutil --check-signature "$MSF_PACKAGE" || exit $?
++  pkgutil --expand "$MSF_PACKAGE" "$MSF_PKG_TMP/expanded" || exit $?
++  MSF_PACKAGE_ARCHS=$(xmllint --nonet --xpath \
++    'normalize-space(/installer-gui-script/options/@hostArchitectures)' \
++    "$MSF_PKG_TMP/expanded/Distribution") || exit $?
++  MSF_PACKAGE_ARCHS=$(printf '%s' "$MSF_PACKAGE_ARCHS" | tr ',' ' ')
++  case " $MSF_PACKAGE_ARCHS " in
++    *" $MSF_EXPECTED_ARCH "*) ;;
++    *)
++      echo "Refusing package for '${MSF_PACKAGE_ARCHS:-unknown}': this installation requires $MSF_EXPECTED_ARCH." >&2
++      echo "The installed Metasploit has not been changed." >&2
++      exit 1
++      ;;
++  esac
++
++  echo "Installing $MSF_EXPECTED_ARCH package..."
++  installer -pkg "$MSF_PACKAGE" -target /
++)
+ 
+ DOWNLOAD_URI=https://downloads.metasploit.com/data/releases/metasploit-framework
+ PKGTYPE=unknown
+@@ -155,8 +220,7 @@ if [ "$ID" -ne 0 ]; then
+     exit 1
+   else
+     echo "Switching to root user to update the package"
+-    sudo -E $0 $@
+-    exit 0
++    exec sudo -E "$0" "$@"
+   fi
+ fi
+ 
+diff --git a/docker/centos6-x64/Dockerfile b/docker/centos6-x64/Dockerfile
+index 89e8659..4d38f45 100644
+--- a/docker/centos6-x64/Dockerfile
++++ b/docker/centos6-x64/Dockerfile
+@@ -35,10 +35,16 @@ RUN yum upgrade -y && yum clean all
+ # --------------------
+ # ERROR: failed to solve: process "/bin/sh -c yum install -y centos-release-SCL && yum clean all" did not complete successfully: exit code: 1
+ 
+-RUN rpm --import http://mirrors.neterra.net/repoforge/RPM-GPG-KEY.dag.txt
+-RUN curl -O http://mirrors.neterra.net/repoforge/redhat/el6/en/x86_64/rpmforge/RPMS/rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm && \
++RUN curl --fail --location --output /tmp/RPM-GPG-KEY.dag.txt https://mirror.nodesdirect.com/rpmforge/RPM-GPG-KEY.dag.txt && \
++    echo '28729c1c1f2be845a6381c972ab06eb0d75e45f628de7d5b65318035c8a76302  /tmp/RPM-GPG-KEY.dag.txt' | sha256sum -c - && \
++    rpm --import /tmp/RPM-GPG-KEY.dag.txt && \
++    rm /tmp/RPM-GPG-KEY.dag.txt
++RUN curl --fail --location --output rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm https://mirror.nodesdirect.com/rpmforge/redhat/el6/en/x86_64/rpmforge/RPMS/rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm && \
++    echo '1f98252908e397f70a216964ed836e93ba4e80550eac343586895a993a41afb7  rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm' | sha256sum -c - && \
+     rpm -i rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm && \
+-    rm rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm
++    rm rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm && \
++    sed -i -e 's|http://apt.sw.be/|https://mirror.nodesdirect.com/rpmforge/|' \
++      -e '/^mirrorlist = /d' /etc/yum.repos.d/rpmforge.repo
+ 
+ RUN yum --enablerepo=rpmforge-extras install -y \
+     autoconf \
+@@ -70,7 +76,6 @@ RUN yum --enablerepo=rpmforge-extras install -y \
+     sudo \
+ 	&& yum clean all
+ 
+-RUN curl -L https://www.opscode.com/chef/install.sh | bash
+ RUN git config --global user.email "packager@myco" && \
+     git config --global user.name "Omnibus Packager"
+ 
+@@ -99,7 +104,10 @@ RUN echo "jenkins ALL=(ALL) NOPASSWD: ALL" | tee -a /etc/sudoers
+ 
+ RUN su jenkins -c 'command curl -sSL https://rvm.io/mpapis.asc | gpg --import - && \
+   command curl -sSL https://rvm.io/pkuczynski.asc | gpg --import - && \
+-  curl -L -sSL https://raw.githubusercontent.com/rvm/rvm/1.29.12/binscripts/rvm-installer | bash -s stable'
++  curl --fail --location --silent --show-error --output /tmp/rvm-installer https://raw.githubusercontent.com/rvm/rvm/1.29.12/binscripts/rvm-installer && \
++  echo "fea24461e98d41528d6e28684aa4c216dbe903869bc3fcdb3493b6518fae2e7e  /tmp/rvm-installer" | sha256sum -c - && \
++  /bin/bash /tmp/rvm-installer stable && \
++  rm -f /tmp/rvm-installer'
+ 
+ RUN su jenkins -c "/bin/bash -l -c 'rvm requirements'"
+ RUN su jenkins -c "/bin/bash -l -c 'rvm install 3.0.6'"
+diff --git a/scripts/verify_macos_package.rb b/scripts/verify_macos_package.rb
+new file mode 100644
+index 0000000..50f5aa8
+--- /dev/null
++++ b/scripts/verify_macos_package.rb
+@@ -0,0 +1,211 @@
++#!/usr/bin/env ruby
++# frozen_string_literal: true
++
++require 'open3'
++require 'optparse'
++require 'set'
++
++# Verify the installed host runtime, including gems loaded with dlopen. Payload
++# binaries shipped for other target platforms are deliberately not host roots.
++class MacOSPackageVerifier
++  class VerificationError < StandardError; end
++
++  MACHO_MAGICS = %w[feedface feedfacf cefaedfe cffaedfe cafebabe bebafeca cafebabf bfbafeca].freeze
++  PAYLOAD_DIRECTORIES = %r{\Aembedded/lib/ruby/gems/[^/]+/gems/(?:metasploit_payloads-mettle-[^/]+/build|metasploit-payloads-[^/]+/data)(?:/|\z)}
++  LOAD_COMMANDS = %w[LC_LOAD_DYLIB LC_LOAD_WEAK_DYLIB LC_REEXPORT_DYLIB LC_LOAD_UPWARD_DYLIB LC_LAZY_LOAD_DYLIB].freeze
++
++  attr_reader :checked_images
++
++  def initialize(root, architecture)
++    raise VerificationError, "Unsupported architecture: #{architecture}" unless %w[arm64 x86_64].include?(architecture)
++
++    @root = File.realpath(root)
++    @architecture = architecture
++    @checked_images = Set.new
++    @image_cache = {}
++  end
++
++  def verify!(runtime: true)
++    ruby = File.join(@root, 'embedded/bin/ruby')
++    raise VerificationError, "Missing packaged Ruby: #{ruby}" unless File.file?(ruby)
++
++    roots = host_images
++    raise VerificationError, 'Packaged Ruby is not Mach-O' unless roots.include?(File.realpath(ruby))
++    raise VerificationError, 'Packaged Ruby is not an executable' unless image(File.realpath(ruby))[:filetype] == 'EXECUTE'
++
++    executables, libraries = roots.partition { |path| path.start_with?(File.join(@root, 'embedded/bin/')) }
++    executables.each { |path| verify_dependencies(path, path, [], Set.new) }
++    ruby_rpaths = image(ruby)[:rpaths].map { |entry| expand_path(entry, ruby, ruby) }
++    libraries.each do |path|
++      # Already loaded libraries have been checked in their executable's run
++      # path context. Remaining roots include Ruby's dlopen-loaded extensions.
++      next if @checked_images.include?(path)
++
++      verify_dependencies(path, ruby, ruby_rpaths, Set.new)
++    end
++    verify_ruby(ruby) if runtime
++    @checked_images.length
++  end
++
++  private
++
++  def run(*arguments)
++    output, error, status = Open3.capture3(*arguments)
++    raise VerificationError, "#{arguments.join(' ')} failed: #{error.strip}" unless status.success?
++
++    output
++  end
++
++  def contained_path(path)
++    real = File.realpath(path)
++    unless real.start_with?("#{@root}/")
++      raise VerificationError, "Host dependency escapes package: #{path} -> #{real}"
++    end
++    real
++  rescue Errno::ENOENT, Errno::ELOOP => error
++    raise VerificationError, "Missing or invalid host dependency: #{path} (#{error.message})"
++  end
++
++  def macho?(path)
++    MACHO_MAGICS.include?(File.binread(path, 4).unpack1('H*'))
++  end
++
++  def host_images
++    images = Set.new
++    visited = Set.new
++    directories = %w[embedded/bin embedded/lib].map { |path| File.join(@root, path) }
++    until directories.empty?
++      directory = contained_path(directories.pop)
++      next unless visited.add?(directory)
++
++      Dir.children(directory).sort.each do |name|
++        path = File.join(directory, name)
++        relative = path.delete_prefix("#{@root}/")
++        next if PAYLOAD_DIRECTORIES.match?(relative) || name.end_with?('.dSYM')
++
++        path = contained_path(path)
++        if File.directory?(path)
++          directories << path
++        elsif File.file?(path)
++          library = [relative, path].any? { |entry| %w[.bundle .dylib .so].include?(File.extname(entry)) }
++          binary = relative.start_with?('embedded/bin/')
++          next unless library || binary
++
++          if macho?(path)
++            images << path
++          elsif library
++            raise VerificationError, "Host library is not Mach-O: #{path}"
++          end
++        end
++      end
++    end
++    images
++  end
++
++  def image(path)
++    @image_cache[path] ||= begin
++      raise VerificationError, "Host dependency is not Mach-O: #{path}" unless macho?(path)
++
++      run('/usr/bin/lipo', path, '-verify_arch', @architecture)
++      output = run('/usr/bin/otool', '-arch', @architecture, '-hv', '-l', path)
++      header = output.lines.find { |line| line.split.first == 'MH_MAGIC_64' }
++      filetype = header&.split&.fetch(4, nil)
++      unless %w[EXECUTE DYLIB BUNDLE].include?(filetype)
++        raise VerificationError, "Not a loadable host image: #{path} (#{filetype || 'unknown file type'})"
++      end
++      platforms = output.scan(/^\s*platform (\S+)\s*$/).flatten
++      legacy_macos = output.match?(/^\s*cmd LC_VERSION_MIN_MACOSX\s*$/)
++      unless platforms == ['MACOS'] || (platforms.empty? && legacy_macos)
++        raise VerificationError, "Host image is not built for macOS: #{path} (#{platforms.join(', ')})"
++      end
++      dependencies = []
++      rpaths = []
++      command = nil
++      output.each_line do |line|
++        if (match = line.match(/^\s*cmd (LC_\w+)\s*$/))
++          command = match[1]
++        elsif LOAD_COMMANDS.include?(command) && (match = line.match(/^\s*name (.+) \(offset \d+\)\s*$/))
++          dependencies << match[1]
++        elsif command == 'LC_RPATH' && (match = line.match(/^\s*path (.+) \(offset \d+\)\s*$/))
++          rpaths << match[1]
++        end
++      end
++      @checked_images << path
++      { dependencies: dependencies, rpaths: rpaths, filetype: filetype }
++    end
++  end
++
++  def system_library?(path)
++    # Modern macOS keeps system libraries in the dyld shared cache. They need
++    # not exist as individual files on either the builder or the test runner.
++    clean = File.expand_path(path)
++    clean.start_with?('/usr/lib/', '/System/Library/')
++  end
++
++  def expand_path(path, loader, executable)
++    case path
++    when %r{\A@loader_path(?:/|\z)}
++      File.expand_path(path.delete_prefix('@loader_path').delete_prefix('/'), File.dirname(loader))
++    when %r{\A@executable_path(?:/|\z)}
++      File.expand_path(path.delete_prefix('@executable_path').delete_prefix('/'), File.dirname(executable))
++    when %r{\A/}
++      path
++    else
++      raise VerificationError, "Unsupported library path #{path.inspect} in #{loader}"
++    end
++  end
++
++  def verify_dependencies(path, executable, inherited_rpaths, visited)
++    path = contained_path(path)
++    info = image(path)
++    own_rpaths = info[:rpaths].map { |entry| expand_path(entry, path, executable) }
++    rpaths = (own_rpaths + inherited_rpaths).uniq
++    return unless visited.add?([path, executable, rpaths])
++
++    info[:dependencies].each do |dependency|
++      if dependency.start_with?('@rpath/')
++        suffix = dependency.delete_prefix('@rpath/')
++        resolved = rpaths.map { |base| File.expand_path(suffix, base) }.find { |candidate| File.file?(candidate) || system_library?(candidate) }
++        raise VerificationError, "Unresolved dependency #{dependency} in #{path}" unless resolved
++      else
++        resolved = expand_path(dependency, path, executable)
++      end
++      next if system_library?(resolved)
++
++      verify_dependencies(resolved, executable, rpaths, visited)
++    end
++  end
++
++  def verify_ruby(ruby)
++    environment = { 'RUBYOPT' => nil, 'RUBYLIB' => nil, 'GEM_HOME' => nil, 'GEM_PATH' => nil }
++    ENV.each_key { |key| environment[key] = nil if key.start_with?('DYLD_') }
++    probe = 'puts RUBY_PLATFORM; puts RbConfig::CONFIG.fetch("host_cpu")'
++    output = run(environment, ruby, '--disable=gems', '-rrbconfig', '-e', probe)
++    platform, cpu = output.lines.map(&:strip)
++    unless platform&.start_with?("#{@architecture}-darwin") && cpu == @architecture
++      raise VerificationError, "Packaged Ruby is not running as #{@architecture}: #{output.strip}"
++    end
++  end
++end
++
++if $PROGRAM_NAME == __FILE__
++  options = { root: '/opt/metasploit-framework', runtime: true }
++  parser = OptionParser.new do |opts|
++    opts.banner = 'Usage: verify_macos_package.rb --arch arm64|x86_64 [--root DIRECTORY] [--static-only]'
++    opts.on('--arch ARCH', 'Expected host architecture (required)') { |value| options[:arch] = value }
++    opts.on('--root DIRECTORY', 'Installed package or expanded Payload directory') { |value| options[:root] = value }
++    opts.on('--static-only', 'Inspect binaries without executing packaged Ruby') { options[:runtime] = false }
++  end
++  begin
++    parser.parse!
++    raise OptionParser::MissingArgument, '--arch' unless options[:arch]
++    raise OptionParser::InvalidArgument, ARGV.join(' ') unless ARGV.empty?
++
++    verifier = MacOSPackageVerifier.new(options[:root], options[:arch])
++    count = verifier.verify!(runtime: options[:runtime])
++    puts "Verified #{count} host Mach-O images for #{options[:arch]}#{options[:runtime] ? ' and native Ruby startup' : ' (static only)'}"
++  rescue MacOSPackageVerifier::VerificationError, OptionParser::ParseError, SystemCallError => error
++    warn error.message
++    exit 1
++  end
++end
+diff --git a/test/msfupdate_macos_test.rb b/test/msfupdate_macos_test.rb
+new file mode 100644
+index 0000000..b21a611
+--- /dev/null
++++ b/test/msfupdate_macos_test.rb
+@@ -0,0 +1,337 @@
++# frozen_string_literal: true
++
++require 'fileutils'
++require 'json'
++require 'minitest/autorun'
++require 'open3'
++require 'rbconfig'
++require 'timeout'
++require 'tmpdir'
++
++class MsfupdateMacOSTest < Minitest::Test
++  TEMPLATE = File.expand_path('../config/templates/metasploit-framework-wrappers/msfupdate.erb', __dir__)
++
++  def setup
++    skip 'macOS package metadata tests require xmllint' unless File.executable?('/usr/bin/xmllint')
++
++    @directory = Dir.mktmpdir('msf update test ')
++    @tools = File.join(@directory, 'tools')
++    @root = File.join(@directory, 'installation')
++    @temp = File.join(@directory, 'downloads')
++    @events = File.join(@directory, 'events.jsonl')
++    @distribution = File.join(@directory, 'Distribution')
++    FileUtils.mkdir_p([@tools, @temp, File.join(@root, 'embedded/bin')])
++    File.write(File.join(@root, 'embedded/bin/ruby'), 'installed runtime sentinel')
++    File.write(File.join(@root, 'configuration'), 'existing user configuration')
++    distribution('arm64')
++    %w[curl pkgutil installer file sysctl uname id sudo].each { |command| mock(command) }
++    @environment = {
++      'PATH' => "#{@tools}:/usr/bin:/bin:/usr/sbin:/sbin",
++      'TMPDIR' => @temp,
++      'TEST_EVENTS' => @events,
++      'TEST_DISTRIBUTION' => @distribution,
++      'TEST_INSTALL_ROOT' => @root,
++      'TEST_HW_ARM' => '1',
++      'TEST_INSTALLED_ARCHS' => 'arm64'
++    }
++    # Exercise the production function definitions without executing the
++    # privileged platform dispatcher. Its sudo path is tested separately.
++    definitions, dispatcher = File.read(TEMPLATE).split(/^DOWNLOAD_URI=/, 2)
++    raise 'Updater dispatcher boundary was not found' unless dispatcher
++
++    @driver = File.join(@directory, 'run update.sh')
++    File.write(@driver, definitions + <<~SH)
++      DOWNLOAD_URI=https://example.invalid/metasploit-framework
++      install_pkg "$TEST_INSTALL_ROOT"
++    SH
++  end
++
++  def teardown
++    FileUtils.remove_entry(@directory) if @directory
++  end
++
++  def distribution(architectures)
++    attribute = architectures.nil? ? '' : "hostArchitectures=\"#{architectures}\""
++    File.write(@distribution, "<installer-gui-script><options #{attribute}/></installer-gui-script>")
++  end
++
++  def mock(command)
++    script = File.join(@tools, command)
++    File.write(script, "#!#{RbConfig.ruby}\n" + <<~'RUBY')
++      require 'fileutils'
++      require 'json'
++      command = File.basename($PROGRAM_NAME)
++      File.open(ENV.fetch('TEST_EVENTS'), 'a') { |file| file.puts(JSON.generate([command, ARGV])) }
++      case command
++      when 'sysctl'
++        puts ENV.fetch('TEST_HW_ARM', '1')
++      when 'uname'
++        puts ARGV.include?('-m') ? ENV.fetch('TEST_UNAME', 'arm64') : 'Darwin test'
++      when 'file'
++        if ENV['TEST_FILE_DESCRIPTION']
++          puts ENV['TEST_FILE_DESCRIPTION']
++        else
++          ENV.fetch('TEST_INSTALLED_ARCHS', 'arm64').split.each do |arch|
++            puts "Mach-O 64-bit executable #{arch}"
++          end
++        end
++        exit ENV.fetch('TEST_FILE_STATUS', '0').to_i
++      when 'curl'
++        destination = ARGV.fetch(ARGV.index('--output') + 1)
++        directory = File.dirname(destination)
++        File.open(ENV.fetch('TEST_EVENTS'), 'a') do |file|
++          file.puts(JSON.generate(['download_directory', { 'path' => directory, 'mode' => File.stat(directory).mode & 0o777 }]))
++        end
++        File.write(destination, 'partially downloaded package')
++        if ENV['TEST_WAIT_FOR_SIGNAL']
++          File.write(ENV.fetch('TEST_DOWNLOAD_PID'), Process.pid.to_s)
++          sleep 60
++        end
++        exit ENV.fetch('TEST_CURL_STATUS', '0').to_i
++      when 'pkgutil'
++        if ARGV.first == '--check-signature'
++          exit ENV.fetch('TEST_SIGNATURE_STATUS', '0').to_i
++        elsif ARGV.first == '--expand'
++          exit ENV.fetch('TEST_EXPAND_STATUS', '0').to_i unless ENV.fetch('TEST_EXPAND_STATUS', '0') == '0'
++          FileUtils.mkdir_p(ARGV.fetch(2))
++          FileUtils.cp(ENV.fetch('TEST_DISTRIBUTION'), File.join(ARGV.fetch(2), 'Distribution'))
++        else
++          abort "Unexpected pkgutil arguments: #{ARGV.inspect}"
++        end
++      when 'installer'
++        exit ENV.fetch('TEST_INSTALLER_STATUS', '0').to_i
++      when 'id'
++        puts ENV.fetch('TEST_UID', '0')
++      when 'sudo'
++        exit ENV.fetch('TEST_SUDO_STATUS', '0').to_i
++      end
++    RUBY
++    File.chmod(0o755, script)
++  end
++
++  def events
++    return [] unless File.exist?(@events)
++
++    File.readlines(@events).map { |line| JSON.parse(line) }
++  end
++
++  def update(extra = {})
++    output, error, status = Open3.capture3(@environment.merge(extra), '/bin/sh', @driver)
++    assert_empty Dir.children(@temp), "Temporary files leaked: #{Dir.children(@temp)}"
++    assert_download_cleanup
++    assert_equal 'existing user configuration', File.read(File.join(@root, 'configuration'))
++    [output + error, status.exitstatus]
++  end
++
++  def assert_download_cleanup
++    events.select { |command, _| command == 'download_directory' }.each do |_, directory|
++      refute File.exist?(directory.fetch('path')), "Temporary directory leaked: #{directory.fetch('path')}"
++    end
++  end
++
++  def test_download_directory_ignores_inherited_user_tmpdir
++    output, status = update
++    assert_equal 0, status, output
++    directory = events.assoc('download_directory').fetch(1)
++    assert_equal '/private/tmp', File.dirname(directory.fetch('path'))
++    assert_equal 0o700, directory.fetch('mode')
++  end
++
++  def test_download_command_rejects_non_https_transport
++    output, status = update
++    assert_equal 0, status, output
++    arguments = events.assoc('curl').fetch(1).dup
++    destination = File.join(@directory, 'unexpected-download')
++    arguments[arguments.index('--output') + 1] = destination
++    arguments[-1] = 'file:///dev/null'
++    _, error, result = Open3.capture3('/usr/bin/curl', *arguments)
++    refute result.success?, error
++    refute File.exist?(destination)
++  end
++
++  def assert_not_installed
++    refute events.any? { |command, _| command == 'installer' }, 'Installer must not run on failed verification'
++  end
++
++  def test_native_arm_update
++    output, status = update
++    assert_equal 0, status, output
++    assert events.any? { |command, _| command == 'installer' }
++  end
++
++  def test_native_intel_update
++    distribution('x86_64')
++    output, status = update('TEST_HW_ARM' => '0', 'TEST_UNAME' => 'x86_64', 'TEST_INSTALLED_ARCHS' => 'x86_64')
++    assert_equal 0, status, output
++  end
++
++  def test_rosetta_shell_preserves_native_installation
++    output, status = update('TEST_UNAME' => 'x86_64')
++    assert_equal 0, status, output
++    assert_includes output, 'Installing arm64 package'
++  end
++
++  def test_existing_intel_installation_is_not_silently_migrated
++    distribution('x86_64')
++    output, status = update('TEST_INSTALLED_ARCHS' => 'x86_64')
++    assert_equal 0, status, output
++    assert_includes output, 'Installing x86_64 package'
++  end
++
++  def test_fresh_install_under_rosetta_uses_hardware_architecture
++    File.unlink(File.join(@root, 'embedded/bin/ruby'))
++    output, status = update('TEST_UNAME' => 'x86_64')
++    assert_equal 0, status, output
++    assert_includes output, 'Installing arm64 package'
++  end
++
++  def test_universal_installed_ruby_selects_native_architecture
++    output, status = update('TEST_INSTALLED_ARCHS' => 'x86_64 arm64')
++    assert_equal 0, status, output
++    assert_includes output, 'Installing arm64 package'
++  end
++
++  def test_universal_package_is_compatible
++    distribution('x86_64, arm64')
++    output, status = update
++    assert_equal 0, status, output
++  end
++
++  def test_rejects_wrong_package_architecture
++    distribution('x86_64')
++    output, status = update
++    refute_equal 0, status
++    assert_includes output, 'requires arm64'
++    assert_not_installed
++  end
++
++  def test_rejects_missing_package_architecture
++    distribution(nil)
++    output, status = update
++    refute_equal 0, status
++    assert_includes output, "package for 'unknown'"
++    assert_not_installed
++  end
++
++  def test_rejects_malformed_distribution
++    File.write(@distribution, '<broken')
++    _, status = update
++    refute_equal 0, status
++    assert_not_installed
++  end
++
++  def test_architecture_names_are_exact_tokens
++    distribution('arm64e')
++    _, status = update
++    refute_equal 0, status
++    assert_not_installed
++  end
++
++  def test_missing_download_never_reaches_signature_or_installer
++    _, status = update('TEST_CURL_STATUS' => '22')
++    assert_equal 22, status
++    refute events.any? { |command, _| command == 'pkgutil' }
++    assert_not_installed
++  end
++
++  def test_partial_download_never_reaches_signature_or_installer
++    _, status = update('TEST_CURL_STATUS' => '18')
++    assert_equal 18, status
++    assert_not_installed
++  end
++
++  def test_signature_failure_never_installs
++    _, status = update('TEST_SIGNATURE_STATUS' => '1')
++    refute_equal 0, status
++    assert_not_installed
++  end
++
++  def test_corrupt_package_never_installs
++    _, status = update('TEST_EXPAND_STATUS' => '1')
++    refute_equal 0, status
++    assert_not_installed
++  end
++
++  def test_unknown_installed_ruby_never_downloads
++    _, status = update('TEST_FILE_STATUS' => '1')
++    refute_equal 0, status
++    refute events.any? { |command, _| command == 'curl' }
++    assert_not_installed
++  end
++
++  def test_non_executable_and_unknown_architectures_never_download
++    ['ASCII text', 'Mach-O 64-bit object arm64', 'Mach-O 64-bit executable arm64e'].each do |description|
++      _, status = update('TEST_FILE_DESCRIPTION' => description)
++      refute_equal 0, status, description
++      refute events.any? { |command, _| command == 'curl' }
++      assert_not_installed
++    end
++  end
++
++  def test_real_executables_are_inspected_without_running_developer_tools
++    source = File.join(@directory, 'main.c')
++    File.write(source, 'int main(void) { return 0; }')
++    binaries = %w[arm64 x86_64].to_h do |arch|
++      path = File.join(@directory, "ruby-#{arch}")
++      output, status = Open3.capture2e('/usr/bin/clang', '-arch', arch, source, '-o', path)
++      assert status.success?, output
++      [arch, path]
++    end
++    universal = File.join(@directory, 'ruby-universal')
++    output, status = Open3.capture2e('/usr/bin/lipo', '-create', *binaries.values, '-output', universal)
++    assert status.success?, output
++
++    File.unlink(File.join(@tools, 'file'))
++    # These tools are used only to make fixtures, never by the updater.
++    %w[lipo clang xcrun].each do |tool|
++      path = File.join(@tools, tool)
++      File.write(path, "#!/bin/sh\necho 'Unexpected developer tool' >&2\nexit 99\n")
++      File.chmod(0o755, path)
++    end
++    [[binaries.fetch('arm64'), 'arm64'], [binaries.fetch('x86_64'), 'x86_64'], [universal, 'arm64']].each do |binary, arch|
++      FileUtils.cp(binary, File.join(@root, 'embedded/bin/ruby'))
++      distribution(arch)
++      output, status = update
++      assert_equal 0, status, output
++      assert_includes output, "Installing #{arch} package"
++    end
++  end
++
++  def test_installer_failure_is_reported
++    _, status = update('TEST_INSTALLER_STATUS' => '7')
++    assert_equal 7, status
++  end
++
++  def test_sudo_failure_is_reported_and_arguments_preserved
++    _, _, status = Open3.capture3(@environment.merge('TEST_UID' => '501', 'TEST_SUDO_STATUS' => '9'), '/bin/sh', TEMPLATE, 'argument with spaces')
++    assert_equal 9, status.exitstatus
++    assert_includes events, ['sudo', ['-E', TEMPLATE, 'argument with spaces']]
++  end
++
++  def test_download_interruption_cleans_up_without_installing
++    pid_file = File.join(@directory, 'download.pid')
++    env = @environment.merge('TEST_WAIT_FOR_SIGNAL' => '1', 'TEST_DOWNLOAD_PID' => pid_file)
++    Open3.popen3(env, '/bin/sh', @driver, pgroup: true) do |input, output, error, process|
++      input.close
++      begin
++        Timeout.timeout(10) do
++          sleep 0.02 until File.exist?(pid_file)
++          Process.kill('TERM', -process.pid)
++          refute process.value.success?
++          output.read
++          error.read
++        end
++      ensure
++        if process.alive?
++          Process.kill('KILL', -process.pid)
++          process.join
++        end
++      end
++    end
++    assert_empty Dir.children(@temp)
++    assert_download_cleanup
++    assert_not_installed
++    download_pid = Integer(File.read(pid_file))
++    assert_raises(Errno::ESRCH) { Process.kill(0, download_pid) }
++  end
++end
+diff --git a/test/verify_macos_package_test.rb b/test/verify_macos_package_test.rb
+new file mode 100644
+index 0000000..0f30f8f
+--- /dev/null
++++ b/test/verify_macos_package_test.rb
+@@ -0,0 +1,227 @@
++# frozen_string_literal: true
++
++require 'fileutils'
++require 'minitest/autorun'
++require 'rbconfig'
++require 'tmpdir'
++require_relative '../scripts/verify_macos_package'
++
++# Use real Mach-O fixtures and Apple's tools: command-output mocks would not
++# catch mistakes in architecture selection or dependency load-command parsing.
++class MacOSPackageVerifierTest < Minitest::Test
++  def setup
++    skip 'Mach-O integration tests require macOS and Xcode command line tools' unless RUBY_PLATFORM.include?('darwin')
++
++    @directory = Dir.mktmpdir('macos package test ')
++    @root = File.join(@directory, 'package')
++    @bin = File.join(@root, 'embedded/bin')
++    @lib = File.join(@root, 'embedded/lib')
++    FileUtils.mkdir_p([@bin, @lib])
++    compile(File.join(@bin, 'ruby'), source: 'int main(void) { return 0; }', executable: true)
++  end
++
++  def teardown
++    FileUtils.remove_entry(@directory) if @directory
++  end
++
++  def compile(path, architecture: 'arm64', source: 'int fixture(void) { return 0; }', executable: false, install_name: nil, dependency: nil, rpath: nil)
++    FileUtils.mkdir_p(File.dirname(path))
++    input = File.join(@directory, 'fixture.c')
++    File.write(input, source)
++    args = ['/usr/bin/clang', '-target', "#{architecture}-apple-macos14", input, '-o', path]
++    args << '-dynamiclib' unless executable
++    args.concat(['-Xlinker', '-install_name', '-Xlinker', install_name]) if install_name
++    args.concat(['-Xlinker', '-needed_library', '-Xlinker', dependency]) if dependency
++    args.concat(['-Xlinker', '-rpath', '-Xlinker', rpath]) if rpath
++    output, error, status = Open3.capture3(*args)
++    assert status.success?, "Fixture compilation failed: #{output}\n#{error}"
++    path
++  end
++
++  def verify(architecture = 'arm64')
++    MacOSPackageVerifier.new(@root, architecture).verify!(runtime: false)
++  end
++
++  def test_native_package_with_spaces_in_its_path
++    compile(File.join(@lib, 'native library.dylib'))
++    assert_equal 2, verify
++  end
++
++  def test_intel_package_remains_supported
++    compile(File.join(@bin, 'ruby'), architecture: 'x86_64', executable: true, source: 'int main(void) { return 0; }')
++    compile(File.join(@lib, 'intel.dylib'), architecture: 'x86_64')
++    assert_equal 2, verify('x86_64')
++  end
++
++  def test_rejects_intel_library_in_arm_package
++    path = compile(File.join(@lib, 'wrong.dylib'), architecture: 'x86_64')
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, path
++    assert_includes error.message, 'arm64'
++  end
++
++  def test_rejects_arm64_library_built_for_ios
++    path = compile(File.join(@lib, 'wrong-platform.dylib'))
++    _, error, status = Open3.capture3('/usr/bin/vtool', '-set-build-version', 'ios', '14.0', '14.0', '-replace', '-output', path, path)
++    assert status.success?, error
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'not built for macOS'
++  end
++
++  def test_accepts_legacy_macos_version_load_command
++    path = compile(File.join(@lib, 'legacy.dylib'))
++    _, error, status = Open3.capture3('/usr/bin/vtool', '-set-version-min', 'macos', '10.15', '10.15', '-replace', '-output', path, path)
++    assert status.success?, error
++    assert_equal 2, verify
++  end
++
++  def test_packaged_ruby_must_be_an_executable
++    compile(File.join(@bin, 'ruby'))
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'Ruby is not an executable'
++  end
++
++  def test_universal_host_library_supplies_expected_slice
++    arm = compile(File.join(@directory, 'arm.dylib'))
++    intel = compile(File.join(@directory, 'intel.dylib'), architecture: 'x86_64')
++    _, error, status = Open3.capture3('/usr/bin/lipo', '-create', arm, intel, '-output', File.join(@lib, 'universal.dylib'))
++    assert status.success?, error
++    assert_equal 2, verify
++  end
++
++  def test_rejects_missing_transitive_library
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: '@loader_path/dependency.dylib')
++    compile(File.join(@lib, 'consumer.dylib'), dependency: dependency)
++    File.unlink(dependency)
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'dependency.dylib'
++  end
++
++  def test_rejects_a_dependency_replaced_with_an_object_file
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: '@loader_path/dependency.dylib')
++    compile(File.join(@lib, 'consumer.dylib'), dependency: dependency)
++    _, error, status = Open3.capture3('/usr/bin/clang', '-target', 'arm64-apple-macos14', '-c', File.join(@directory, 'fixture.c'), '-o', dependency)
++    assert status.success?, error
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'Not a loadable host image'
++  end
++
++  def test_rejects_a_transitive_dependency_that_is_not_macho
++    path = File.join(@lib, 'dependency-without-extension')
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: path)
++    compile(File.join(@lib, 'consumer.dylib'), dependency: dependency)
++    File.write(path, 'not a dynamic library')
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'not Mach-O'
++  end
++
++  def test_resolves_loader_relative_dependencies
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: '@loader_path/dependency.dylib')
++    compile(File.join(@lib, 'consumer.dylib'), dependency: dependency)
++    assert_equal 3, verify
++  end
++
++  def test_resolves_executable_relative_dependencies
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: '@executable_path/../lib/dependency.dylib')
++    compile(File.join(@bin, 'consumer'), dependency: dependency, executable: true, source: 'int main(void) { return 0; }')
++    assert_equal 3, verify
++  end
++
++  def test_resolves_rpath_dependencies
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: '@rpath/dependency.dylib')
++    compile(File.join(@lib, 'consumer.dylib'), dependency: dependency, rpath: '@loader_path')
++    assert_equal 3, verify
++  end
++
++  def test_rpath_is_inherited_from_the_loading_executable
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: '@rpath/dependency.dylib')
++    consumer = compile(File.join(@lib, 'consumer.dylib'), install_name: '@rpath/consumer.dylib', dependency: dependency)
++    compile(File.join(@bin, 'ruby'), executable: true, source: 'int main(void) { return 0; }', dependency: consumer, rpath: '@executable_path/../lib')
++    assert_equal 3, verify
++  end
++
++  def test_dlopen_library_uses_ruby_rpaths
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: '@rpath/dependency.dylib')
++    compile(File.join(@lib, 'consumer.bundle'), dependency: dependency)
++    compile(File.join(@bin, 'ruby'), executable: true, source: 'int main(void) { return 0; }', rpath: '@executable_path/../lib')
++    assert_equal 3, verify
++  end
++
++  def test_rejects_unresolved_rpath
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: '@rpath/dependency.dylib')
++    compile(File.join(@lib, 'consumer.dylib'), dependency: dependency)
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'Unresolved dependency'
++  end
++
++  def test_rejects_build_machine_library_even_when_it_exists
++    dependency = compile(File.join(@directory, 'outside.dylib'))
++    compile(File.join(@lib, 'consumer.dylib'), dependency: dependency)
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'escapes package'
++  end
++
++  def test_rejects_library_symlink_escaping_package
++    dependency = compile(File.join(@directory, 'outside.dylib'))
++    File.symlink(dependency, File.join(@lib, 'external.dylib'))
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'escapes package'
++  end
++
++  def test_rejects_directory_symlink_escaping_package
++    external = File.join(@directory, 'outside')
++    compile(File.join(external, 'external.dylib'))
++    File.symlink(external, File.join(@lib, 'external'))
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'escapes package'
++  end
++
++  def test_rejects_broken_library_symlink
++    File.symlink('missing.dylib', File.join(@lib, 'external.dylib'))
++    assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++  end
++
++  def test_foreign_target_payloads_are_not_host_roots
++    payload = File.join(@lib, 'ruby/gems/3.4.0/gems/metasploit_payloads-mettle-1.0.48/build/x86_64-apple-darwin/bin/mettle.dylib')
++    compile(payload, architecture: 'x86_64')
++    assert_equal 1, verify
++  end
++
++  def test_payload_exclusion_does_not_hide_a_loaded_host_dependency
++    payload = File.join(@lib, 'ruby/gems/3.4.0/gems/metasploit_payloads-mettle-1.0.48/build/x86_64-apple-darwin/bin/mettle.dylib')
++    compile(payload, architecture: 'x86_64')
++    # Use an install-name rewrite so the linker does not reject the mixed-arch
++    # fixture before the package verifier gets to inspect it.
++    dependency = compile(File.join(@lib, 'dependency.dylib'), install_name: payload)
++    compile(File.join(@lib, 'consumer.dylib'), dependency: dependency)
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, payload
++  end
++
++  def test_rejects_non_macho_host_library
++    File.write(File.join(@lib, 'broken.bundle'), 'not a shared library')
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'not Mach-O'
++  end
++
++  def test_library_symlink_cannot_hide_a_non_macho_target
++    File.write(File.join(@lib, 'plain-text'), 'not a shared library')
++    File.symlink('plain-text', File.join(@lib, 'broken.bundle'))
++    error = assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++    assert_includes error.message, 'not Mach-O'
++  end
++
++  def test_rejects_missing_ruby
++    File.unlink(File.join(@bin, 'ruby'))
++    assert_raises(MacOSPackageVerifier::VerificationError) { verify }
++  end
++
++  def test_runtime_probe_rejects_an_executable_that_is_not_ruby
++    architecture = RbConfig::CONFIG.fetch('host_cpu')
++    compile(File.join(@bin, 'ruby'), architecture: architecture, executable: true, source: 'int main(void) { return 0; }')
++    error = assert_raises(MacOSPackageVerifier::VerificationError) do
++      MacOSPackageVerifier.new(@root, architecture).verify!
++    end
++    assert_includes error.message, "Packaged Ruby is not running as #{architecture}"
++  end
++end

@@ -1,0 +1,10 @@
+2026-11-08T11:12:03.4145571Z   echo 'New build required'
+2026-11-08T11:12:03.4310968Z New build required
+2026-11-08T11:12:15.3630888Z #10 0.584 /tmp/RPM-GPG-KEY.dag.txt: OK
+2026-11-08T11:12:15.8171598Z #11 0.467 rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm: OK
+2026-11-08T11:43:16.9909665Z             [HealthCheck] I | 2026-11-08T11:43:16+00:00 | Health check time: 44.3763s
+2026-11-08T11:46:19.3609689Z PACKAGED_POSTGRESQL_RECOVERY_VERIFIED framework=15fd116f30d5f652e9153f18d0965aa2d5ec3841 migration_candidate=711d40bb2bc115bf6d68d2b85865083929615a6a
+2026-11-08T11:46:19.4669811Z PACKAGED_COMPRESSION_AND_FIDDLE_PASSED zlib=1.4
+2026-11-08T11:46:56.7483106Z Database initialization successful
+2026-11-08T11:46:59.0295891Z [*] Connected to msf. Connection type: postgresql.
+2026-11-08T11:47:01.4206269Z [*] Connected to msf. Connection type: postgresql.

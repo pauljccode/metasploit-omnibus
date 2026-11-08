@@ -1,0 +1,7 @@
+{
+  "VALIDATION.txt": "b7fc6b559adeb6d31b7646d4bbca0a3fe9d2b43d2482895128038669920c4843",
+  "centos6-repoforge.patch": "ba3ed7c5fb202c0a0fe82561ba991c4dba4c031461a43bd82fea48360bba6ee5",
+  "package-result-excerpts.txt": "a7feda3a518ba63fc1336624c8b0867713523e15bd716c0dd2eb9a1c1c65611b",
+  "package-validation.patch": "41c5c16802dbe686b7b3ee805bffbd31671641a9f51f6fc7aed6e9cf1b7a33a0",
+  "standalone-validation.patch": "be0df50e434044a575ddd5520c6ee45dee1d5a9d14a214bb04187d50b5e7eacc"
+}

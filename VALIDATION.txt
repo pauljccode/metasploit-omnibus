@@ -1,0 +1,61 @@
+CentOS 6 RepoForge repair validation — November 8, 2026
+
+Source-only candidate: 1f309d7; base: 494135f0cd93c71145b9ad1f173b8d696c67b0ba.
+centos6-repoforge.patch is the proposed upstream change. The other patches
+include the separate validation configuration and are supporting evidence only.
+
+The previous key and release-RPM URLs return HTTP 404. The replacement key
+matches the file in RepoForge source at commit 82e29d5def2823523ac2c472c0a6620b0d774d40:
+https://github.com/repoforge/rpms/blob/82e29d5def2823523ac2c472c0a6620b0d774d40/specs/rpmforge-release/RPM-GPG-KEY-rpmforge-dag
+The release RPM's signatures verify against that key (6b8d79e6). Both bootstrap
+files are hash-pinned in the patch. Subsequent repository metadata and all RPM
+versions are not pinned by those two hashes. The mirror is third-party storage.
+
+Standalone build: passed, on a native x86 GitHub-hosted Ubuntu runner, using
+current master plus only the RepoForge patch. Ruby 3.0.6, Bundler 2.2.33, gcc
+4.4.7 and the expected RepoForge/git/fakeroot/ccache RPMs were checked afterward.
+The existing RVM installer encountered a GitHub 504, then downloaded through
+its Bitbucket fallback and verified the signature successfully. Existing Docker
+syntax and bootstrap warnings remain. The obsolete Chef download step returned
+no script bytes; this result does not claim that it installed Chef.
+
+Reproduce the standalone builder from the base above:
+  git apply centos6-repoforge.patch
+  docker build --platform linux/amd64 --progress=plain -t centos6-repoforge docker/centos6-x64
+  docker run --rm --user jenkins centos6-repoforge /bin/bash -l -ec '
+    test "$(ruby -e "print RUBY_VERSION")" = 3.0.6
+    ruby -ropenssl -rzlib -e "puts [RUBY_VERSION, OpenSSL::OPENSSL_VERSION, Zlib.zlib_version]"
+    bundle --version
+    gcc --version
+    rpm -q rpmforge-release git fakeroot ccache
+  '
+standalone-validation.patch includes that source change and the exact CI test.
+Apply it instead of the source-only patch to inspect the test configuration.
+
+Combined package qualification: passed in 35m30s. Its source and workflow are recorded
+in package-validation.patch, also relative to 494135f. This is the existing
+packaging integration with zlib/libffi upgrades and Framework PostgreSQL changes,
+plus the repaired builder including #255's CentOS bootstrap edits. It is not a
+claim that the narrow mirror patch fixes unrelated package issues on master.
+The fresh-builder gate forbids falling back to Rapid7's cached image. The log
+confirms image construction and use of the resulting image for both package
+build and fresh installation. Omnibus health completed in 44.3763 seconds;
+compression/Fiddle, console, CLI checks and database connections over the
+initial Unix socket and TCP all passed. Framework recovery source digests
+matched the expected candidate. This run also recovered an RVM GitHub 502
+through its signature-verified Bitbucket fallback. Existing license-report and
+ambiguous-gem warnings remain; they also appeared in the previous cached-image
+package trial.
+
+The original CI runs and installer artifacts are in a private validation
+repository. This public bundle provides the tested source, workflows,
+reproduction steps and selected result excerpts. No container image or installer
+has been published as a release.
+
+Installer artifact verification
+
+The uploaded ZIP was downloaded and its SHA-256 matched:
+bb07aabd52374564a135d2028dd20d6b33ea967995a639a685e8fa5c30b0239e
+All ZIP CRC checks pass. It contains one 411624262-byte CentOS 6 x64 RPM:
+metasploit-framework-0.0.0~20261108112031~1rapid7-1.el6.x86_64.rpm
+These are focused CentOS results, not a new all-platform Verify matrix.

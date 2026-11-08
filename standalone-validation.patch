@@ -1,0 +1,72 @@
+diff --git a/.github/workflows/centos6-mirror-standalone.yml b/.github/workflows/centos6-mirror-standalone.yml
+new file mode 100644
+index 0000000..6bbc1b2
+--- /dev/null
++++ b/.github/workflows/centos6-mirror-standalone.yml
+@@ -0,0 +1,42 @@
++name: CentOS 6 standalone mirror validation
++
++on:
++  push:
++    branches:
++      - test/centos6-mirror-standalone
++
++permissions:
++  contents: read
++
++jobs:
++  builder:
++    runs-on: ubuntu-latest
++    timeout-minutes: 60
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Build the CentOS 6 image
++        timeout-minutes: 50
++        run: |
++          set -euxo pipefail
++          docker build --progress=plain --tag msf-centos6-builder \
++            docker/centos6-x64 2>&1 | tee centos6-builder.log
++
++      - name: Check the builder toolchain
++        run: |
++          docker run --rm --user jenkins msf-centos6-builder /bin/bash -l -ec '
++            test "$(ruby -e "print RUBY_VERSION")" = 3.0.6
++            ruby -ropenssl -rzlib -e "puts [RUBY_VERSION, OpenSSL::OPENSSL_VERSION, Zlib.zlib_version]"
++            bundle --version
++            gcc --version
++            rpm -q rpmforge-release git fakeroot ccache
++          '
++
++      - name: Preserve builder diagnostics
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: centos6-builder-diagnostics
++          path: centos6-builder.log
++          if-no-files-found: warn
++          retention-days: 7
+diff --git a/docker/centos6-x64/Dockerfile b/docker/centos6-x64/Dockerfile
+index 89e8659..59bb26b 100644
+--- a/docker/centos6-x64/Dockerfile
++++ b/docker/centos6-x64/Dockerfile
+@@ -35,10 +35,16 @@ RUN yum upgrade -y && yum clean all
+ # --------------------
+ # ERROR: failed to solve: process "/bin/sh -c yum install -y centos-release-SCL && yum clean all" did not complete successfully: exit code: 1
+ 
+-RUN rpm --import http://mirrors.neterra.net/repoforge/RPM-GPG-KEY.dag.txt
+-RUN curl -O http://mirrors.neterra.net/repoforge/redhat/el6/en/x86_64/rpmforge/RPMS/rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm && \
++RUN curl --fail --location --output /tmp/RPM-GPG-KEY.dag.txt https://mirror.nodesdirect.com/rpmforge/RPM-GPG-KEY.dag.txt && \
++    echo '28729c1c1f2be845a6381c972ab06eb0d75e45f628de7d5b65318035c8a76302  /tmp/RPM-GPG-KEY.dag.txt' | sha256sum -c - && \
++    rpm --import /tmp/RPM-GPG-KEY.dag.txt && \
++    rm /tmp/RPM-GPG-KEY.dag.txt
++RUN curl --fail --location --output rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm https://mirror.nodesdirect.com/rpmforge/redhat/el6/en/x86_64/rpmforge/RPMS/rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm && \
++    echo '1f98252908e397f70a216964ed836e93ba4e80550eac343586895a993a41afb7  rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm' | sha256sum -c - && \
+     rpm -i rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm && \
+-    rm rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm
++    rm rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm && \
++    sed -i -e 's|http://apt.sw.be/|https://mirror.nodesdirect.com/rpmforge/|' \
++      -e '/^mirrorlist = /d' /etc/yum.repos.d/rpmforge.repo
+ 
+ RUN yum --enablerepo=rpmforge-extras install -y \
+     autoconf \
