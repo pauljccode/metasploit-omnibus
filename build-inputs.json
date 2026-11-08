@@ -1,0 +1,8 @@
+{
+  "upstream_base": "494135f0cd93c71145b9ad1f173b8d696c67b0ba",
+  "framework": "15fd116f30d5f652e9153f18d0965aa2d5ec3841",
+  "pending_pg_candidate": "711d40bb2bc115bf6d68d2b85865083929615a6a",
+  "zlib": "1.4",
+  "libffi": "3.8.0",
+  "deployment_target": "14.0"
+}

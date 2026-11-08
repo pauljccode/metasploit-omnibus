@@ -1,0 +1,46 @@
+macOS obsolete gem registration cleanup — validation, 2026-11-08
+
+Source: product 8d488fdc2fdc525a51c4a6da72a4a3a2105f52c9 on Omnibus
+494135f0cd93c71145b9ad1f173b8d696c67b0ba. Integration qualification uses
+pending dependency and PostgreSQL changes. Intel validation head:
+6684a0c0d32bcf7f14011bdc434e99c2f75d1fac.
+
+Complete Omnibus packages built on ARM64 macOS 27.0 and native Intel macOS
+15.7.9. Each contains 327 host Mach-O images, inspected for architecture and
+dependency closure with deployment targets no newer than macOS 14.0.
+Packaged Ruby starts natively. Intel macOS 14 runtime was not tested.
+
+16 focused cleanup tests / 53 assertions pass on ARM64 and Intel.
+The default-gem transition regression fails before the correction and passes
+after it; modified registrations remain protected.
+
+A real older-package upgrade passed on ARM64 macOS 14.8.7 without Xcode,
+Command Line Tools or Homebrew. Obsolete normal registrations, including
+fiddle 1.1.6 and io-console 0.8.1, were retired. Modified gemspecs, a gem containing a user-added
+file, an independently installed gem, settings, workspace and database data
+survived. The missing-extension warnings disappeared.
+
+Controlled fresh/upgrade/reinstall checks passed on ARM64 and Intel. The
+previous package payload was checked unchanged before adding six fixture
+files to its receipt. Tests cover obsolete, modified and added-file gems,
+a separately installed gem, and retained SQL records over configured/TCP
+connections. All gem contents remain in place. ARM64's final runtime cleanup
+was replayed after correcting harness ordering; Intel passed the complete
+corrected harness uninterrupted.
+
+Intel results exported from private CI (representative output):
+16 runs, 53 assertions, 0 failures, 0 errors, 0 skips
+PACKAGED_GEM_INVENTORY_VERIFIED registrations=327
+DEFAULT_GEM_NATIVE_RUNTIME_PASSED fiddle=1.1.6 io-console=0.8.1
+GEM_RESIDUE_FRESH_INSTALL_PASSED
+GEM_RESIDUE_upgrade_PRESERVATION_PASSED
+GEM_RESIDUE_reinstall_PRESERVATION_PASSED
+GEM_RESIDUE_PACKAGE_QUALIFICATION_PASSED
+
+Package SHA-256:
+ARM64: 17a4a6971cc58b219e707bb678515bd254dd45a645c1922e1fea6e76aaa388ec
+Intel: 4340f6e660b054aed7b3da41badf695aafb8eda245b43c231c03a4e9de134a07
+
+The Intel artifact ZIP was downloaded and matched its GitHub SHA-256 digest.
+The original logs and packages are retained locally. Existing license-report
+and base64/logger ambiguity warnings are outside this change.

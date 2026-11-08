@@ -1,0 +1,13 @@
+{
+  "base": "494135f0cd93c71145b9ad1f173b8d696c67b0ba",
+  "publication_commit": "8d488fdc2fdc525a51c4a6da72a4a3a2105f52c9",
+  "qualified_source_tree": "643804df01c58c40d0de00879aad266b7249ff0b",
+  "publication_tree_identical": true,
+  "sha256": {
+    "config/software/metasploit-framework-wrappers.rb": "714613d6c198ea92f9030438c8dd9951befedb5c8e3fb3ca7690b7a1e1211c94",
+    "package-scripts/metasploit-framework/preinst": "648de6f8b0fe9d1541b20454dd3907a81c46d336b976d344a110494351596742",
+    "package-scripts/metasploit-framework/postinst": "1b7708380a3132b6bf0a4d7fe38f5f3d87c7a14afc7c1c18890410e291e30cf1",
+    "config/templates/metasploit-framework-wrappers/retire-package-gems.rb.erb": "45354ebe5b0548ddbb63d9b697151158f767d13db0f2a66acbc3adac00da098c",
+    "test/retire_package_gems_test.rb": "fb087de64eade8f598e29127954eb2ba1017bbc0443999a68c726220518784e7"
+  }
+}
